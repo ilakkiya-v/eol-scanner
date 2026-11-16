@@ -607,6 +607,9 @@ async function settings() {
   $("#plat").value = s.llm.platform || "anthropic";
   const llmFields = ["base_url", "aws_region", "aws_profile", "workspace_id", "gcp_project", "gcp_region", "foundry_resource", "claude_cli", "effort"];
   $("#l_effort").value = s.llm.effort || "high";
+  const llmBody = () => { const b = { provider: $("#prov").value, platform: $("#plat").value, model: $("#model").value.trim(),
+      ollama_url: $("#ourl").value.trim(), ollama_model: $("#omodel").value.trim(), send_code: $("#sendCode").checked };
+    llmFields.forEach((f) => (b[f] = $("#l_" + f).value.trim())); return b; };
   const showCred = () => { const plat = $("#plat").value, e = (lo.env || {})[plat] || {};
     $("#credState").innerHTML = e.kind === "cli" ? (e.set ? `<span style="color:var(--ok)">✓ Claude Code found on this machine.</span> <span class="muted">Press Test to check it is signed in.</span>` : `<span style="color:var(--crit)">✗ Claude Code not found.</span> <span class="muted">Install it and sign in once (see the guide), or enter its path above.</span>`)
       : e.kind === "env" ? (e.set ? `<span style="color:var(--ok)">✓ ${esc(e.set)} is set in the scanner's environment.</span>` : `<span class="muted">Needs ${e.names.map(esc).join(" or ")} set in the scanner's environment before it starts.</span>`)
