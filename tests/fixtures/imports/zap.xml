@@ -1,0 +1,5 @@
+<?xml version="1.0"?><OWASPZAPReport programName="ZAP" version="2.15.0"><site name="http://qa-app.lab.corp" host="qa-app.lab.corp" port="80" ssl="false"><alerts>
+<alertitem><pluginid>40012</pluginid><alert>Cross Site Scripting (Reflected)</alert><name>Cross Site Scripting (Reflected)</name><riskcode>3</riskcode><confidence>2</confidence><desc>&lt;p&gt;XSS&lt;/p&gt;</desc>
+<instances><instance><uri>http://qa-app.lab.corp/search?q=x</uri><method>GET</method><param>q</param><attack>&lt;script&gt;alert(1)&lt;/script&gt;</attack><evidence>&lt;script&gt;alert(1)&lt;/script&gt;</evidence></instance></instances>
+<count>1</count><solution>&lt;p&gt;Encode output.&lt;/p&gt;</solution><reference></reference><cweid>79</cweid><wascid>8</wascid></alertitem>
+</alerts></site></OWASPZAPReport>

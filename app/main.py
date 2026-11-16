@@ -9,13 +9,15 @@ from typing import Any, Optional
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from starlette.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import db, jobs, report, scope
+from . import db, importers, jobs, report, scope
 from .advisor import llm
 from .config import APP_DIR, MAX_UPLOAD_BYTES
 from .eol import feeds
+from .scanners import browser
 from .eol.database import EOL_DB
 
 app = FastAPI(title="EOL Scanner", version="1.0.0", docs_url="/api/docs", redoc_url=None)
@@ -60,6 +62,7 @@ class WebScanIn(BaseModel):
     timeout: Optional[float] = None
     verify_tls: Optional[bool] = None
     use_proxy: Optional[bool] = None
+    render_js: Optional[bool] = None
 
 
 class ScopeIn(BaseModel):
@@ -112,6 +115,36 @@ async def start_code(file: UploadFile = File(...), operator: str = Form(...), ti
     sid = jobs.start_code(file.filename or "upload.zip", dest, operator.strip(), ticket.strip(),
                           {"include_node_modules": include_node_modules, "size": size})
     return {"id": sid}
+
+
+IMPORT_LIMIT = 200 * 1024 * 1024
+
+
+@app.post("/api/scans/import", dependencies=[Depends(auth)])
+async def import_results(file: UploadFile = File(...), operator: str = Form(...), ticket: str = Form(""),
+                         attest: bool = Form(False), into_scan: str = Form("")):
+    """Import ZAP / Burp / Semgrep / SARIF / Nuclei results as a new scan or into an existing one."""
+    if not attest:
+        raise HTTPException(400, "You must confirm these results come from authorized testing.")
+    if not operator.strip():
+        raise HTTPException(400, "Operator name is required for the audit trail.")
+    data = await file.read(IMPORT_LIMIT + 1)
+    if len(data) > IMPORT_LIMIT:
+        raise HTTPException(413, "import file exceeds 200 MB")
+    try:
+        tool, found = await run_in_threadpool(importers.parse, data, file.filename or "")
+    except importers.ImportError_ as e:
+        raise HTTPException(400, str(e))
+    if into_scan and not db.get_scan(into_scan):
+        raise HTTPException(404, "scan to merge into was not found")
+    sid = await run_in_threadpool(jobs.import_results, tool, file.filename or "import", found, operator.strip(),
+                                  ticket.strip(), into_scan or None)
+    return {"id": sid, "tool": tool, "imported": len(found)}
+
+
+@app.get("/api/capabilities", dependencies=[Depends(auth)])
+def capabilities():
+    return {"browser": browser.available()}
 
 
 @app.get("/api/scans", dependencies=[Depends(auth)])

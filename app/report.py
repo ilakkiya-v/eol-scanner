@@ -27,13 +27,14 @@ def to_json(scan: dict, findings: list[dict]) -> str:
 def to_csv(scan: dict, findings: list[dict]) -> str:
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["severity", "category", "title", "product", "version", "eol_date", "status", "cves", "location", "confidence", "top_containment"])
+    w.writerow(["severity", "category", "title", "product", "version", "eol_date", "status", "cves", "location", "confidence",
+                "source_tool", "cwe", "top_containment"])
     for f in _sorted(findings):
         lc = f.get("lifecycle") or {}
         cves = ";".join(((v.get("aliases") or [v["id"]])[0]) for v in f.get("vulns", [])[:20])
         w.writerow([f["severity"], f["category"], f["title"], f.get("product", ""), f.get("version", ""), lc.get("eol_date", ""),
                     lc.get("status", ""), cves, f.get("location", ""), f.get("confidence", ""),
-                    (f.get("containment") or [{}])[0].get("title", "")])
+                    f.get("source_tool", "EOL Scanner"), ";".join(f.get("cwe") or []), (f.get("containment") or [{}])[0].get("title", "")])
     return buf.getvalue()
 
 
@@ -45,11 +46,18 @@ def to_markdown(scan: dict, findings: list[dict]) -> str:
              f"- Operator: {scan.get('operator') or '-'}  Ticket/authorization: {scan.get('ticket') or '-'}",
              f"- Started: {_ts(scan.get('created'))}  Finished: {_ts(scan.get('finished'))}",
              f"- Findings: {s.get('findings', 0)} (critical {c.get('critical',0)}, high {c.get('high',0)}, medium {c.get('medium',0)}, low {c.get('low',0)}, info {c.get('info',0)})",
-             f"- Components: {s.get('components', 0)}, EOL: {s.get('eol_components', 0)}, EOL soon: {s.get('eol_soon_components', 0)}", ""]
+             f"- Components: {s.get('components', 0)}, EOL: {s.get('eol_components', 0)}, EOL soon: {s.get('eol_soon_components', 0)}"]
+    if s.get("imports"):
+        lines.append("- Imported: " + ", ".join(f"{i['tool']} ({i['count']} from {i['file']})" for i in s["imports"]))
+    lines.append("")
     for f in _sorted(findings):
         lines += [f"## [{f['severity'].upper()}] {f['title']}", ""]
         if f.get("location"):
             lines.append(f"**Location:** `{f['location']}`  ")
+        if f.get("source_tool") or f.get("cwe"):
+            lines.append(f"**Source:** {f.get('source_tool', 'EOL Scanner')}" + (f"  **CWE:** {', '.join(f['cwe'])}" if f.get("cwe") else "") + "  ")
+        if f.get("detail"):
+            lines.append(f"**Details:** {f['detail']}  ")
         lc = f.get("lifecycle") or {}
         if lc.get("status"):
             lines.append(f"**Lifecycle:** {lc.get('status')} — cycle {lc.get('cycle') or '?'}, EOL {lc.get('eol_date') or lc.get('status')}, latest {lc.get('latest_version') or '-'}  ")
@@ -68,6 +76,10 @@ def to_markdown(scan: dict, findings: list[dict]) -> str:
                 lines.append(f"- **{m['title']}** — {m['detail']}")
                 if m.get("snippet"):
                     lines += ["  ```", *["  " + l for l in m["snippet"].splitlines()], "  ```"]
+        if len(f.get("locations") or []) > 1:
+            lines += ["", "**All locations:**"] + [f"- `{l.get('path')}:{l.get('line')}` {l.get('code', '')}" for l in f["locations"][:25]]
+        if f.get("tool_solution"):
+            lines += ["", f"**Fix suggested by {f.get('source_tool', 'the tool')} (needs a code change):** {f['tool_solution']}"]
         if f.get("manual_tests"):
             lines += ["", "**Manual verification (authorized lab only):**"] + [f"- {t}" for t in f["manual_tests"]]
         if f.get("extended_support"):

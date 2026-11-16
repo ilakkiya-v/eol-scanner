@@ -1,6 +1,9 @@
 services:
   eolscan:
-    build: .
+    build:
+      context: .
+      args:
+        WITH_BROWSER: "0"   # set to "1" for the headless-browser crawl (single-page apps); adds ~400 MB
     image: eolscan:latest
     ports:
       - "127.0.0.1:8080:8080"   # local only; change to 0.0.0.0 to share on a team VM (set EOLSCAN_USER/PASSWORD!)

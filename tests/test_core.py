@@ -135,6 +135,87 @@ def test_llm_missing_cloud_config_is_friendly():
                 os.environ[k] = v
 
 
+def test_code_injection_rules():
+    from app.scanners import code
+    fx = pathlib.Path(__file__).resolve().parent / "fixtures" / "legacyapp"
+    r = code.scan_tree(fx, lambda m: None, lambda p, m="": None, lambda: False)
+    rules = {f["rule"] for f in r.findings}
+    for want in ("sqli-java-concat", "sqli-php-var", "sqli-python-format", "sqli-node-template", "sqli-dotnet-concat",
+                 "cmdi-java", "cmdi-php", "cmdi-node", "cmdi-python", "xss-php-echo", "xss-asp-write", "xss-dom-sink",
+                 "path-traversal-php-include", "path-traversal-file", "ssrf", "open-redirect", "xxe-java-default"):
+        assert want in rules, want
+    flagged = [l["path"] for f in r.findings for l in f["locations"]]
+    assert not [x for x in flagged if x.endswith("safe.js")], "safe patterns were flagged"
+    assert not [x for x in flagged if "vendor/" in x and x.endswith(".min.js") and "xss" in x], "vendored lib flagged"
+    for f in r.findings:  # no duplicate locations
+        locs = [(l["path"], l["line"]) for l in f["locations"]]
+        assert len(locs) == len(set(locs)), f["rule"]
+
+
+def test_importers():
+    from app import importers
+    d = pathlib.Path(__file__).resolve().parent / "fixtures" / "imports"
+    expect = {"zap.json": ("OWASP ZAP", {"sql-injection", "security-headers"}), "zap.xml": ("OWASP ZAP", {"xss"}),
+              "burp.xml": ("Burp Suite", {"xss", "cookie-flags"}), "semgrep.json": ("Semgrep", {"sql-injection", "command-injection"}),
+              "codeql.sarif": ("CodeQL (SARIF)", {"path-traversal", "ssrf"}), "nuclei.jsonl": ("Nuclei", {"path-traversal", "imported"})}
+    for name, (tool, kbs) in expect.items():
+        t, fs = importers.parse((d / name).read_bytes(), name)
+        assert t == tool and {f["kb"] for f in fs} == kbs, (name, t, {f["kb"] for f in fs})
+    try:
+        importers.parse(b'<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "b">]><issues/>')
+        assert False, "entity XML accepted"
+    except importers.ImportError_:
+        pass
+
+
+def _serve_fake_target():
+    import threading
+    from http.server import ThreadingHTTPServer
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+    import fake_target
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), fake_target.H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def test_web_hygiene_checks():
+    import asyncio
+    from app.scanners.web import WebScanner
+    srv = _serve_fake_target()
+    try:
+        sc = WebScanner(f"http://127.0.0.1:{srv.server_port}", "safe", {"rate_per_sec": 100, "max_pages": 10},
+                        {"allow": ["127.0.0.1"], "deny": []}, lambda m: None, lambda p, m="": None, lambda: False)
+        r = asyncio.run(sc.run())
+        kbs = {f["kb"]: f for f in r.findings}
+        assert {"security-headers", "cookie-flags", "cors", "cleartext-login"} <= set(kbs), set(kbs)
+        assert kbs["cors"]["severity"] == "high"
+    finally:
+        srv.shutdown()
+
+
+def test_browser_crawl_scoped():
+    from app.scanners import browser
+    if not browser.available():
+        print("skip: playwright not installed")
+        return
+    import asyncio
+    from app.scanners.web import WebScanner
+    srv = _serve_fake_target()
+    logs = []
+    try:
+        sc = WebScanner(f"http://127.0.0.1:{srv.server_port}", "passive", {"rate_per_sec": 100, "max_pages": 6, "render_js": True},
+                        {"allow": ["127.0.0.1"], "deny": []}, logs.append, lambda p, m="": None, lambda: False)
+        r = asyncio.run(sc.run())
+        if any("Chromium is not installed" in l for l in logs):
+            print("skip: chromium not installed")
+            return
+        found = {(c.product, c.version) for c in r.components if c.source == "browser"}
+        assert ("vue", "2.5.17") in found, found
+        assert any("blocked out-of-scope request" in l for l in logs), "CDN requests were not blocked"
+    finally:
+        srv.shutdown()
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

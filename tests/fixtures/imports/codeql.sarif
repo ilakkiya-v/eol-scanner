@@ -1,0 +1,7 @@
+{"$schema":"https://json.schemastore.org/sarif-2.1.0.json","version":"2.1.0","runs":[{"tool":{"driver":{"name":"CodeQL","rules":[
+ {"id":"java/path-injection","shortDescription":{"text":"Uncontrolled data used in path expression"},"helpUri":"https://codeql.github.com/codeql-query-help/java/java-path-injection/","help":{"text":"Validate user input before using it to construct a file path."},"properties":{"tags":["security","external/cwe/cwe-022","external/cwe/cwe-023"],"security-severity":"7.5","precision":"high"}},
+ {"id":"java/ssrf","shortDescription":{"text":"Server-side request forgery"},"properties":{"tags":["security","external/cwe/cwe-918"],"security-severity":"9.1"}}]}},
+ "results":[
+  {"ruleId":"java/path-injection","ruleIndex":0,"level":"error","message":{"text":"This path depends on a user-provided value."},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src/main/java/com/acme/Download.java"},"region":{"startLine":31,"snippet":{"text":"new File(base, request.getParameter(\"f\"))"}}}}]},
+  {"ruleId":"java/ssrf","level":"error","message":{"text":"Potential server-side request forgery"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src/main/java/com/acme/Proxy.java"},"region":{"startLine":18}}}]}
+ ]}]}

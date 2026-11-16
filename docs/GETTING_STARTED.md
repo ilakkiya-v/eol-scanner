@@ -172,7 +172,7 @@ To use it: open a finding and click **Ask AI for a tailored containment plan**. 
 
 These checks use only your laptop. No VPN or lab access is needed.
 
-### a) Unit tests (about 5 seconds)
+### a) Unit tests (under a minute)
 
 macOS / Linux:
 
@@ -184,7 +184,7 @@ Windows: `.venv\Scripts\python tests\test_core.py`
 
 The Docker image doesn't include the tests, so run them with Python. You only need `pip install -r requirements.txt -r requirements-llm.txt` in a venv.
 
-You should see 9 lines starting with `ok`.
+You should see 13 lines starting with `ok`. If Playwright isn't installed, the browser test prints `skip` instead, which is fine.
 
 ### b) Live scan of a fake legacy app
 
@@ -202,7 +202,8 @@ You should see 9 lines starting with `ok`.
    - mode **Active**
    - tick the authorization box
    - click **Start scan**.
-4. Expect about 20 findings: Apache 2.2, PHP 5.6, AngularJS 1.5, jQuery 1.12, an exposed `.git` folder, an exposed Spring actuator, TRACE enabled, and more.
+4. Expect about 24 findings: Apache 2.2, PHP 5.6, AngularJS 1.5, jQuery 1.12, an exposed `.git` folder, an exposed Spring actuator, TRACE enabled, a CORS policy that trusts any site, missing security headers, a session cookie without HttpOnly, a login form over HTTP, and more.
+   With **Render pages in a headless browser** ticked (needs the browser installed, see section 8), you also get Vue 2.5 and Handlebars 4.0, which only load through JavaScript.
 5. Try a target that isn't in scope, such as `http://example.com`. It should be refused.
 
 If the scanner runs in Docker, `127.0.0.1` means the container itself. In that case use `http://host.docker.internal:8899` as the target and add `host.docker.internal` to the scope. On Linux, also start the fake app with `tests/fake_target.py 8899 0.0.0.0`.
@@ -210,9 +211,15 @@ If the scanner runs in Docker, `127.0.0.1` means the container itself. In that c
 ### c) Code review of a sample legacy project
 
 1. In **Code review**, upload `tests/fixtures/legacyapp.zip`.
-2. Expect about 25 findings: log4j 2.14.1 (Log4Shell), Struts 2.3, Django 1.11, Python 2.7 and Debian 9 base images, ViewState MAC disabled, a hardcoded password, and more.
+2. Expect about 42 findings: log4j 2.14.1 (Log4Shell), Struts 2.3, Django 1.11, Python 2.7 and Debian 9 base images, ViewState MAC disabled, a hardcoded password, and about 17 injection-style issues (SQL, command, XSS, file inclusion, SSRF, open redirect, XXE) in the sample PHP, Java, Node, Python and C# files.
 
-### d) AI connection without a real account (optional)
+### d) Importing results from other tools
+
+1. Open **Import** and upload any file from `tests/fixtures/imports/`: `zap.json`, `zap.xml`, `burp.xml`, `semgrep.json`, `codeql.sarif` or `nuclei.jsonl`.
+2. Use **Add to** to merge it into the scan from step b, or leave it as a new entry.
+3. Each imported finding shows the tool, CWE, the tool's suggested fix, and containment advice that needs no code change.
+
+### e) AI connection without a real account (optional)
 
 This checks the gateway path against a fake gateway on your laptop.
 
@@ -248,6 +255,38 @@ The fake gateway only replies "OK". Real advice needs a real connection (step 5)
 
 ---
 
+## 8. Optional: headless-browser crawl for single-page apps
+
+Modern apps (React, Angular, Vue) build their pages in the browser, so a plain crawl only sees an empty shell. The browser crawl renders each page in headless Chromium. It reads library versions from the live page, records the API calls the page makes, and follows links that only exist after rendering.
+
+Python:
+
+```bash
+.venv/bin/pip install -r requirements-browser.txt
+.venv/bin/playwright install chromium
+```
+
+Windows: `.venv\Scripts\pip install -r requirements-browser.txt`, then `.venv\Scripts\playwright install chromium`.
+
+Docker: in `docker-compose.yml` set `WITH_BROWSER: "1"`, then run `docker compose up -d --build`.
+
+If your company blocks the Chromium download, ask IT. Playwright can also use a browser path or download mirror they provide (`PLAYWRIGHT_DOWNLOAD_HOST`).
+
+Then tick **Render pages in a headless browser** under **Advanced** on the web scan form. The browser follows the same scope allowlist: requests to hosts that aren't allowed are aborted, never sent. The log lists which hosts were blocked.
+
+## 9. Pairing with ZAP, Burp, Semgrep or CodeQL
+
+This tool doesn't fuzz parameters or trace data through code. For a fuller assessment:
+
+1. Run your usual dynamic scanner (ZAP or Burp) against the lab app, and/or a code analyzer (Semgrep or CodeQL) on the source.
+2. Export the results:
+   - ZAP: Traditional JSON or XML.
+   - Burp: Report selected issues → XML.
+   - Semgrep: `--json`.
+   - CodeQL, Snyk, Checkmarx, SonarQube and others: SARIF.
+   - Nuclei: `-jsonl`.
+3. Use **Import** and merge them into this tool's scan of the same app. You get one report with containment steps for every finding.
+
 ## Updating
 
 ```bash
@@ -274,4 +313,7 @@ Your settings and scan history are kept.
 | Test connection: cannot reach endpoint | Proxy, VPN or firewall. Gateways are often reachable only on the VPN. |
 | UI looks out of date after an update | Hard refresh (Ctrl/Cmd+Shift+R). |
 | Port 8080 already in use | Python: use `--port 8090`. Docker: change `127.0.0.1:8080:8080` to `127.0.0.1:8090:8080`. |
+| Browser option greyed out | Playwright isn't installed in the environment running the scanner. See section 8. |
+| Browser crawl log says Chromium is not installed | Run `playwright install chromium` (Python), or rebuild Docker with `WITH_BROWSER: "1"`. |
+| Import says "unrecognised format" | Export again in one of the listed formats. For ZAP use the *Traditional JSON/XML* report, not HTML. |
 | Sharing with your team on a VM | Bind to `0.0.0.0` and set `EOLSCAN_USER` / `EOLSCAN_PASSWORD`. See the README. |

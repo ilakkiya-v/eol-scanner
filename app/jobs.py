@@ -8,6 +8,7 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Optional
 
 from . import analysis, db, scope
 from .config import UPLOAD_DIR
@@ -65,7 +66,8 @@ def _run_web(sid: str, target: str, mode: str, options: dict) -> None:
         comp_findings, inventory = analysis.enrich(res.components, feeds_cfg.get("online", True), feeds_cfg.get("osv", True), log, progress)
         raw = analysis.enrich_raw(res.findings)
         _finish(sid, comp_findings + raw, inventory, {"pages": res.pages[:200], "scripts": res.scripts[:300],
-                                                       "requests": res.requests, "tls": res.tls})
+                                                       "requests": res.requests, "tls": res.tls,
+                                                       "api_endpoints": res.api_endpoints})
         db.update_scan(sid, status="cancelled" if cancelled() else "done", progress=1.0, message="complete", finished=time.time())
     except Exception as e:
         log("ERROR: " + "".join(traceback.format_exception_only(type(e), e)).strip())
@@ -128,3 +130,32 @@ def upload_path(filename: str) -> Path:
     d = code_scanner.new_workdir(UPLOAD_DIR)
     safe = "".join(ch for ch in Path(filename).name if ch.isalnum() or ch in "._-") or "upload.zip"
     return d / safe
+
+
+def import_results(tool: str, filename: str, findings: list[dict], operator: str, ticket: str,
+                   into_scan: Optional[str] = None) -> str:
+    """Store imported findings, either as a new scan or merged into an existing one (one combined report)."""
+    findings = analysis.enrich_raw(findings)
+    record = {"tool": tool, "file": filename, "count": len(findings), "at": time.time(), "operator": operator}
+    if into_scan:
+        s = db.get_scan(into_scan)
+        if not s:
+            raise KeyError(into_scan)
+        for f in findings:
+            db.add_finding(into_scan, f)
+        summary = s.get("summary") or {}
+        inventory = summary.get("inventory") or []
+        fresh = analysis.summarize(db.get_findings(into_scan), inventory)
+        summary.update(fresh)
+        summary["imports"] = (summary.get("imports") or []) + [record]
+        db.update_scan(into_scan, summary=summary)
+        db.append_log(into_scan, f"imported {len(findings)} findings from {tool} ({filename}) by {operator}")
+        return into_scan
+    sid = db.create_scan("import", filename, tool, operator, ticket, {"tool": tool})
+    for f in findings:
+        db.add_finding(sid, f)
+    summary = analysis.summarize(findings, [])
+    summary.update({"inventory": [], "imports": [record]})
+    db.update_scan(sid, status="done", progress=1.0, message="imported", finished=time.time(), summary=summary)
+    db.append_log(sid, f"imported {len(findings)} findings from {tool} ({filename}) by {operator}")
+    return sid

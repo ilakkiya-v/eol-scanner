@@ -1,0 +1,3 @@
+# Optional: headless-browser crawl for JavaScript-heavy / single-page apps.
+# After installing, download the browser once:  playwright install chromium
+playwright>=1.40

@@ -129,7 +129,75 @@ CODE_RULES = [
     ("tls-verify-off", r"verify\s*=\s*False|InsecureSkipVerify:\s*true|rejectUnauthorized:\s*false|CURLOPT_SSL_VERIFYPEER,\s*(?:false|0)|ServerCertificateValidationCallback\s*=", None, "medium",
      "TLS certificate verification disabled", "weak-crypto"),
     ("legacy-ssl-protocol", r"SecurityProtocolType\.(?:Ssl3|Tls\b|Tls11)|PROTOCOL_TLSv1\b|SSLv3_method|TLSv1_method", None, "medium", "Legacy SSL/TLS protocol pinned in code", "legacy-tls"),
+
+    # ---- injection-prone patterns in the app's own code. Regex matches show *where to look*; each needs a manual
+    # check that user input really reaches the sink. Vendored/minified libraries are skipped for these rules.
+    # SQL built from strings
+    ("sqli-java-concat", r"(?:executeQuery|executeUpdate|execute|prepareStatement|createQuery|createNativeQuery)\s*\(\s*\"[^\"]*\b(?:SELECT|INSERT|UPDATE|DELETE|WHERE|ORDER BY)\b[^\"]*\"\s*\+", (".java", ".jsp", ".kt", ".groovy"), "high",
+     "SQL query built by string concatenation (possible SQL injection)", "sql-injection"),
+    ("sqli-python-format", r"\.execute(?:many)?\(\s*(?:f[\"'][^\"']*\b(?:SELECT|INSERT|UPDATE|DELETE|WHERE)\b[^\"']*\{|[\"'][^\"']*\b(?:SELECT|INSERT|UPDATE|DELETE|WHERE)\b[^\"']*[\"']\s*(?:%\s*[\w(]|\+|\.format\())", (".py",), "high",
+     "SQL query built with string formatting (possible SQL injection)", "sql-injection"),
+    ("sqli-php-var", r"(?:mysqli?_query|->query|->exec|pg_query|mssql_query|sqlsrv_query)\s*\([^;]*?(?:\"[^\"]*\b(?:SELECT|INSERT|UPDATE|DELETE|WHERE)\b[^\"]*\$\w|[\"'][^\"']*\b(?:SELECT|INSERT|UPDATE|DELETE|WHERE)\b[^\"']*[\"']\s*\.\s*\$)", (".php", ".inc"), "high",
+     "SQL query with PHP variables interpolated (possible SQL injection)", "sql-injection"),
+    ("sqli-dotnet-concat", r"(?:new\s+(?:Sql|OleDb|Odbc|MySql|Oracle)Command|\.CommandText\s*=|ExecuteSqlRaw|FromSqlRaw|SqlQuery)\s*\(?\s*\"[^\"]*\b(?:SELECT|INSERT|UPDATE|DELETE|WHERE)\b[^\"]*\"\s*\+", (".cs", ".vb", ".aspx", ".ascx"), "high",
+     "SQL command built by string concatenation (possible SQL injection)", "sql-injection"),
+    ("sqli-node-template", r"\.(?:query|execute|raw)\(\s*(?:`[^`]*\b(?:SELECT|INSERT|UPDATE|DELETE|WHERE)\b[^`]*\$\{|[\"'][^\"']*\b(?:SELECT|INSERT|UPDATE|DELETE|WHERE)\b[^\"']*[\"']\s*\+)", (".js", ".ts", ".mjs", ".cjs"), "high",
+     "SQL query built with template/concatenation (possible SQL injection)", "sql-injection"),
+    ("sqli-asp-classic", r"(?:\.Execute|\.Open)\s*\(?\s*\"[^\"]*\b(?:SELECT|INSERT|UPDATE|DELETE|WHERE)\b[^\"]*\"\s*&\s*Request", (".asp", ".inc"), "critical",
+     "Classic ASP SQL with Request data concatenated (SQL injection)", "sql-injection"),
+    # OS command execution
+    ("cmdi-java", r"Runtime\.getRuntime\(\)\.exec\s*\([^;]*\+|new\s+ProcessBuilder\s*\([^;]*\+", (".java", ".jsp", ".kt", ".groovy"), "high",
+     "OS command built from strings (possible command injection)", "command-injection"),
+    ("cmdi-python", r"\bos\.(?:system|popen)\s*\(|subprocess\.\w+\([^)]*shell\s*=\s*True|\bcommands\.getoutput\(", (".py",), "high",
+     "Shell command execution (possible command injection)", "command-injection"),
+    ("cmdi-php", r"\b(?:system|exec|shell_exec|passthru|popen|proc_open)\s*\([^;]*\$(?:_(?:GET|POST|REQUEST|COOKIE|SERVER)|\w+)|`[^`]*\$_(?:GET|POST|REQUEST)", (".php", ".inc"), "high",
+     "Shell command with PHP variables (possible command injection)", "command-injection"),
+    ("cmdi-node", r"child_process[\s\S]{0,80}\.(?:exec|execSync)\s*\(\s*(?:`[^`]*\$\{|[^,)]*\+)|\bexec(?:Sync)?\(\s*`[^`]*\$\{", (".js", ".ts", ".mjs", ".cjs"), "high",
+     "child_process.exec with dynamic command (possible command injection)", "command-injection"),
+    ("cmdi-dotnet", r"Process\.Start\s*\([^;]*\+|\.Arguments\s*=\s*[^;]*\+\s*Request", (".cs", ".vb", ".aspx"), "medium",
+     "Process started with concatenated arguments (possible command injection)", "command-injection"),
+    # dynamic code evaluation
+    ("eval-js", r"(?<![\w.])eval\s*\((?!\s*['\"`][^'\"`]*['\"`]\s*\))|new\s+Function\s*\(|set(?:Timeout|Interval)\s*\(\s*['\"`][^'\"`]*['\"`]\s*\+", (".js", ".ts", ".html", ".htm", ".jsp", ".php"), "medium",
+     "Dynamic JavaScript evaluation (eval / new Function)", "code-injection"),
+    ("eval-python", r"(?<![\w.])(?:eval|exec)\s*\(\s*(?:request\.|flask\.request|self\.request|input\()", (".py",), "critical",
+     "eval/exec on request data", "code-injection"),
+    ("ssti-python", r"render_template_string\s*\([^)]*(?:request\.|\+|%|\.format|f[\"'])|Template\s*\(\s*request\.", (".py",), "high",
+     "Server-side template built from user data (template injection)", "code-injection"),
+    # XSS sinks
+    ("xss-dom-sink", r"\.(?:innerHTML|outerHTML)\s*\+?=(?!=)(?!\s*[\"'`][^\"'`]*[\"'`]\s*;)|document\.write(?:ln)?\s*\((?!\s*[\"'][^\"']*[\"']\s*\))|insertAdjacentHTML\s*\(", (".js", ".ts", ".html", ".htm", ".jsp", ".php", ".aspx"), "medium",
+     "DOM XSS sink (innerHTML / document.write) with dynamic data", "xss"),
+    ("xss-react-dangerous", r"dangerouslySetInnerHTML|v-html\s*=|\[innerHTML\]\s*=|bypassSecurityTrust(?:Html|Script|Url|ResourceUrl)\s*\(", (".js", ".jsx", ".ts", ".tsx", ".vue", ".html"), "medium",
+     "Framework HTML escaping bypassed (dangerouslySetInnerHTML / v-html / bypassSecurityTrust)", "xss"),
+    ("xss-php-echo", r"\b(?:echo|print)\s*\(?\s*\$_(?:GET|POST|REQUEST|COOKIE|SERVER)\b|<\?=\s*\$_(?:GET|POST|REQUEST)", (".php", ".inc"), "high",
+     "Request data echoed without encoding (reflected XSS)", "xss"),
+    ("xss-jsp-scriptlet", r"<%=\s*request\.get(?:Parameter|Header|QueryString)\s*\(|out\.print(?:ln)?\s*\(\s*request\.getParameter", (".jsp", ".jspf"), "high",
+     "Request parameter written into the page (reflected XSS)", "xss"),
+    ("xss-asp-write", r"Response\.Write\s*\(?\s*Request(?:\.QueryString|\.Form|\.Params|\s*\()|<%=\s*Request(?:\.QueryString|\.Form|\s*\()", (".asp", ".aspx", ".ascx", ".cs", ".vb"), "high",
+     "Request data written to the response (reflected XSS)", "xss"),
+    ("xss-validate-request-off", r"validateRequest\s*=\s*\"false\"|requestValidationMode\s*=\s*\"2\.0\"", (".config", ".aspx"), "medium",
+     "ASP.NET request validation disabled", "xss"),
+    # file paths, includes, SSRF, XXE, redirects
+    ("path-traversal-php-include", r"\b(?:include|require)(?:_once)?\s*\(?\s*[^;]*\$_(?:GET|POST|REQUEST|COOKIE)", (".php", ".inc"), "critical",
+     "include/require with request data (file inclusion)", "path-traversal"),
+    ("path-traversal-file", r"new\s+File(?:InputStream|Reader)?\s*\([^;]*request\.getParameter|\bopen\s*\(\s*(?:request\.|flask\.request)|fs\.(?:readFile|createReadStream|readFileSync|sendFile)\s*\([^)]*req\.(?:query|params|body)|res\.sendFile\s*\([^)]*req\.|(?:file_get_contents|fopen|readfile)\s*\(\s*\$_(?:GET|POST|REQUEST)|(?:File\.(?:ReadAll\w*|Open\w*)|Server\.MapPath)\s*\([^)]*Request", None, "high",
+     "File path taken from request data (path traversal)", "path-traversal"),
+    ("ssrf", r"(?:requests\.(?:get|post)|urllib\.request\.urlopen|urlopen)\s*\(\s*(?:request\.|flask\.request)|new\s+URL\s*\(\s*request\.getParameter|(?:file_get_contents|curl_init)\s*\(\s*\$_(?:GET|POST|REQUEST)|(?:axios|fetch|got|request)(?:\.get|\.post)?\s*\(\s*req\.(?:query|body|params)|(?:WebClient|HttpClient)\(\)[\s\S]{0,60}Request\.", None, "high",
+     "Server fetches a URL taken from request data (SSRF)", "ssrf"),
+    ("xxe-enabled", r"LIBXML_NOENT|libxml_disable_entity_loader\s*\(\s*false|resolve_entities\s*=\s*True|XmlResolver\s*=\s*new\s+XmlUrlResolver|DtdProcessing\s*=\s*DtdProcessing\.Parse|setExpandEntityReferences\s*\(\s*true", None, "high",
+     "XML parser configured to resolve external entities (XXE)", "xxe"),
+    ("xxe-java-default", r"(?:DocumentBuilderFactory|SAXParserFactory|XMLInputFactory)\.newInstance\s*\(\s*\)(?![\s\S]{0,600}(?:disallow-doctype-decl|FEATURE_SECURE_PROCESSING|SUPPORT_DTD|external-general-entities))", (".java", ".jsp"), "medium",
+     "Java XML parser created without XXE hardening nearby (verify)", "xxe"),
+    ("open-redirect", r"sendRedirect\s*\(\s*request\.getParameter|Response\.Redirect\s*\(\s*Request(?:\.QueryString|\.Form|\s*\()|header\s*\(\s*[\"']Location:\s*[\"']\s*\.\s*\$_(?:GET|POST|REQUEST)|res\.redirect\s*\(\s*req\.(?:query|body|params)|redirect\s*\(\s*request\.(?:args|GET|values|form)", None, "medium",
+     "Redirect target taken from request data (open redirect)", "open-redirect"),
+    ("ldap-injection", r"(?:search|DirectorySearcher)[\s\S]{0,40}\(\s*\"[^\"]*\([a-zA-Z]+=\"\s*\+", (".java", ".cs"), "medium",
+     "LDAP filter built by concatenation (LDAP injection)", "sql-injection"),
+    ("weak-random-token", r"(?:Math\.random\(\)|new\s+Random\(\)|\brand\(\)|\bmt_rand\(|random\.random\(\))[\s\S]{0,80}(?:token|session|password|secret|otp|nonce|reset)", None, "low",
+     "Non-cryptographic random used for a security value", "weak-crypto"),
 ]
+
+# Rules that only make sense in first-party code (vendored libraries contain these sinks legitimately).
+APP_CODE_ONLY = {r[0] for r in CODE_RULES if r[5] in ("sql-injection", "command-injection", "code-injection", "xss", "path-traversal",
+                                                     "ssrf", "xxe", "open-redirect") or r[0] == "weak-random-token"} - {"php-eval-input"}
 _RULES = [(rid, re.compile(rx, re.M), globs, sev, title, kb) for rid, rx, globs, sev, title, kb in CODE_RULES]
 
 LANG_EXT = {".java": "Java", ".py": "Python", ".php": "PHP", ".js": "JavaScript", ".ts": "TypeScript", ".rb": "Ruby",
@@ -209,10 +277,15 @@ def scan_tree(root: Path, log: Callable[[str], None], progress: Callable[[float,
                 continue
             if rid.startswith(("hardcoded", "generic-password", "private-key")) and re.search(r"(?:test|spec|example|sample|fixture|mock)", rel, re.I):
                 continue
+            if rid in APP_CODE_ONLY and ("node_modules/" in rel or fname.endswith((".min.js", ".bundle.js"))
+                                       or (ext == ".js" and _is_minified_lib(rel))):
+                continue
             for m in rx.finditer(text):
                 line_no = text.count("\n", 0, m.start()) + 1
                 line = text.splitlines()[line_no - 1] if text else ""
                 hit = rule_hits.setdefault(rid, {"rid": rid, "severity": sev, "title": title, "kb": kb, "locations": []})
+                if any(l["path"] == rel and l["line"] == line_no for l in hit["locations"]):
+                    continue
                 if len(hit["locations"]) < 25:
                     redacted = re.sub(r"(['\"])[^'\"]{4,}(['\"])", r"\1***\2", line.strip()) if kb == "secrets" else line.strip()
                     hit["locations"].append({"path": rel, "line": line_no, "code": redacted[:240]})

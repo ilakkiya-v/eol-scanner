@@ -273,6 +273,93 @@ KB: dict[str, dict] = {
     "dom-xss": PRODUCTS["jquery"],
     "secrets": {"contain": [S("Rotate & purge", "Rotate the credential and purge it from history (git filter-repo) and from build artifacts.", effort="low", kind="harden")], "manual": []},
     "weak-crypto": {"contain": [], "manual": ["Assess where the weak setting is used and whether an attacker can sit on that network path (MITM in lab)."]},
+    # ---------------- application-level weaknesses (code can't change -> filter in front, limit blast radius behind)
+    "sql-injection": {"contain": [
+        S("Virtual-patch with the OWASP Core Rule Set",
+          "Put ModSecurity/Coraza (or your WAF) in front of the app with CRS SQLi rules (942xxx) at paranoia level 2+ in blocking mode for the affected paths. "
+          "Start in detection-only for a day of QA traffic, tune false positives, then block.",
+          "# Apache / nginx-modsecurity\nSecRuleEngine On\nInclude /etc/modsecurity/crs/crs-setup.conf\nInclude /etc/modsecurity/crs/rules/*.conf\n"
+          "SecAction \"id:900000,phase:1,pass,nolog,setvar:tx.blocking_paranoia_level=2\"", effort="medium", kind="virtual-patch"),
+        S("Allowlist parameter formats at the proxy",
+          "If a parameter should only ever be numeric or a short code, reject anything else at the reverse proxy. This is the most reliable fix when code can't change.",
+          "# nginx: only digits allowed for ?id= on /report\nlocation /report {\n  if ($arg_id !~ \"^[0-9]{1,10}$\") { return 400; }\n  proxy_pass http://legacy_app;\n}", effort="low", kind="virtual-patch"),
+        S("Least-privilege database account",
+          "Point the app at a DB login that can only read/write the tables it needs: no DDL, no xp_cmdshell / COPY PROGRAM / LOAD_FILE / INTO OUTFILE, no access to other schemas. "
+          "This turns a full compromise into a limited data exposure.", effort="medium", kind="harden"),
+        S("Detect", "Alert on DB errors in app logs (syntax errors, 'unclosed quotation mark'), WAF 942xxx hits, and unusual query volume from the app account.", effort="low", kind="detect"),
+    ], "manual": [
+        "Lab only: send a single quote (') and a benign boolean pair (id=1 AND 1=1 vs id=1 AND 1=2) to the flagged parameter and compare responses.",
+        "For deeper confirmation run sqlmap against an isolated clone only, with --level 1 --risk 1 (read-only checks), never on shared QA.",
+        "Confirm the WAF rule blocks the same requests after it is deployed."]},
+    "command-injection": {"contain": [
+        S("Block shell metacharacters for the affected parameters",
+          "Reject ; | & ` $( ) < > and newlines in the flagged parameters at the WAF/proxy (CRS 932xxx rules cover this).",
+          "# nginx\nif ($args ~* \"(%3B|;|%7C|\\||%60|`|%24%28|\\$\\(|%26|&&)\") { return 400; }", effort="low", kind="virtual-patch"),
+        S("Run the app as an unprivileged user with egress blocked",
+          "Command injection gives the attacker whatever the app user can do. Use a dedicated low-privilege account, a read-only filesystem where possible, and default-deny outbound traffic so no reverse shell or download works.", effort="medium", kind="isolate"),
+        S("Detect", "Alert on unexpected child processes of the app server (sh, cmd.exe, powershell, curl, wget, nc) with EDR or auditd.",
+          "# auditd: log every execve by the app user\n-a always,exit -F arch=b64 -S execve -F uid=<app-uid> -k legacy_app_exec", effort="low", kind="detect"),
+    ], "manual": ["Lab only: inject a harmless time delay (e.g. `;sleep 5`) or a DNS lookup to a canary you control into the flagged parameter and observe."]},
+    "xss": {"contain": [
+        S("Add a Content-Security-Policy at the proxy",
+          "A CSP added by the reverse proxy blocks injected inline scripts without touching the app. Start with Report-Only, review violations, then enforce.",
+          "# nginx\nadd_header Content-Security-Policy-Report-Only \"default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'\" always;\n"
+          "# Apache\nHeader always set Content-Security-Policy \"default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'\"", effort="medium", kind="virtual-patch"),
+        S("WAF XSS rules for the affected parameters", "Enable CRS 941xxx rules (or the WAF's XSS signatures) in blocking mode for the flagged pages.", effort="low", kind="virtual-patch"),
+        S("Protect session cookies", "Make session cookies HttpOnly and SameSite at the proxy so stolen-cookie attacks don't work even if a script runs (see cookie-flags).",
+          "# nginx >= 1.19.3\nproxy_cookie_flags ~ httponly secure samesite=lax;", effort="low", kind="harden"),
+    ], "manual": ["Lab only: submit a harmless marker such as <i>eolscan</i> or \"><svg> in the flagged parameter and check whether it renders unencoded.",
+                 "After adding CSP, confirm a test payload no longer executes and the app still works (check the browser console for CSP violations)."]},
+    "path-traversal": {"contain": [
+        S("Block traversal sequences at the proxy", "Reject ../, ..\\, %2e%2e, null bytes and absolute paths in the flagged parameters (CRS 930xxx).",
+          "# nginx\nif ($args ~* \"(\\.\\./|\\.\\.%2f|%2e%2e|%00|\\.\\.\\\\)\") { return 400; }", effort="low", kind="virtual-patch"),
+        S("Restrict what the app can read", "Run the app with filesystem permissions limited to its own directories; keep secrets (keys, configs of other apps) unreadable by the app user. For PHP set open_basedir and allow_url_include=Off.",
+          "; php.ini\nopen_basedir = /var/www/app:/tmp\nallow_url_include = Off", effort="medium", kind="harden"),
+    ], "manual": ["Lab only: request a known harmless file through the parameter (e.g. ../../../../etc/hostname or ..\\..\\windows\\win.ini) and check the response."]},
+    "ssrf": {"contain": [
+        S("Egress-filter the app host", "Default-deny outbound from the app; allow only the specific hosts it must call. Block cloud metadata (169.254.169.254) and internal admin ranges explicitly.",
+          "iptables -A OUTPUT -d 169.254.169.254 -j DROP\n# then allow only the required upstreams", effort="medium", kind="isolate"),
+        S("Allowlist URL values at the proxy", "If the parameter should only point to a few known hosts, reject any other value at the WAF/proxy.", effort="low", kind="virtual-patch"),
+        S("Use IMDSv2 / metadata protection", "On AWS require IMDSv2 (hop limit 1); on GCP/Azure require the metadata header, so SSRF can't read cloud credentials.", effort="low", kind="harden"),
+    ], "manual": ["Lab only: point the parameter at a canary URL you control (or a DNS canary) and confirm whether the server calls it."]},
+    "xxe": {"contain": [
+        S("Reject DOCTYPE in XML requests at the WAF", "Block request bodies containing <!DOCTYPE or <!ENTITY on the endpoints that accept XML.",
+          "SecRule REQUEST_BODY \"@rx <!(?:DOCTYPE|ENTITY)\" \"id:100010,phase:2,deny,status:400,msg:'XML DTD not allowed'\"", effort="low", kind="virtual-patch"),
+        S("Disable DTDs via JVM/system settings where possible", "For Java you can set system properties without code changes: -Djavax.xml.accessExternalDTD=\"\" -Djavax.xml.accessExternalSchema=\"\" (JAXP 1.5+). Egress filtering also stops out-of-band XXE.",
+          "-Djavax.xml.accessExternalDTD=\"\" -Djavax.xml.accessExternalSchema=\"\" -Djdk.xml.entityExpansionLimit=1000", effort="low", kind="harden"),
+    ], "manual": ["Lab only: send an XML body with an external entity pointing at a DNS canary you control; a lookup confirms XXE without reading files."]},
+    "open-redirect": {"contain": [
+        S("Allowlist redirect targets at the proxy", "Reject redirect parameters that are absolute URLs to other domains (or that start with //).",
+          "# nginx: only allow relative paths in ?next=\nif ($arg_next ~* \"^(https?:|//|%2f%2f)\") { return 400; }", effort="low", kind="virtual-patch"),
+    ], "manual": ["Lab only: set the parameter to https://example.com and check whether the response redirects there."]},
+    "security-headers": {"contain": [
+        S("Add the headers at the reverse proxy", "All of these can be added in front of the app without touching its code.",
+          "# nginx\nadd_header X-Frame-Options \"SAMEORIGIN\" always;\nadd_header X-Content-Type-Options \"nosniff\" always;\n"
+          "add_header Referrer-Policy \"strict-origin-when-cross-origin\" always;\nadd_header Strict-Transport-Security \"max-age=31536000\" always;\n"
+          "add_header Content-Security-Policy-Report-Only \"default-src 'self'; object-src 'none'; frame-ancestors 'self'\" always;\n\n"
+          "# Apache (mod_headers)\nHeader always set X-Frame-Options \"SAMEORIGIN\"\nHeader always set X-Content-Type-Options \"nosniff\"\n\n"
+          "# IIS web.config\n<httpProtocol><customHeaders>\n  <add name=\"X-Frame-Options\" value=\"SAMEORIGIN\" />\n  <add name=\"X-Content-Type-Options\" value=\"nosniff\" />\n</customHeaders></httpProtocol>",
+          effort="low", kind="harden"),
+    ], "manual": ["Roll CSP out as Report-Only first; legacy apps often rely on inline scripts, so check the browser console before enforcing."]},
+    "cookie-flags": {"contain": [
+        S("Set cookie flags at the proxy", "Add Secure, HttpOnly and SameSite to cookies as they pass through the proxy, without changing the app.",
+          "# nginx >= 1.19.3\nproxy_cookie_flags ~ secure httponly samesite=lax;\n\n# Apache 2.4\nHeader always edit Set-Cookie \"(?i)^((?:(?!;\\s?HttpOnly).)+)$\" \"$1; HttpOnly\"\n"
+          "Header always edit Set-Cookie \"(?i)^((?:(?!;\\s?Secure).)+)$\" \"$1; Secure\"\n\n# IIS / ASP.NET web.config\n<httpCookies httpOnlyCookies=\"true\" requireSSL=\"true\" sameSite=\"Lax\" />",
+          effort="low", kind="harden"),
+    ], "manual": ["After the change, log in and confirm the app still works (some legacy JS reads its own cookies; leave those without HttpOnly)."]},
+    "cors": {"contain": [
+        S("Override CORS at the proxy", "Strip the app's Access-Control-* headers and set a fixed allowlist of trusted origins, or none at all if no cross-site access is needed.",
+          "# nginx\nproxy_hide_header Access-Control-Allow-Origin;\nproxy_hide_header Access-Control-Allow-Credentials;\n"
+          "map $http_origin $cors_ok { default \"\"; \"https://portal.qa.corp\" $http_origin; }\nadd_header Access-Control-Allow-Origin $cors_ok always;", effort="low", kind="virtual-patch"),
+    ], "manual": ["Lab only: from a page on another origin, try fetch(target, {credentials: 'include'}) and see whether the response is readable."]},
+    "cleartext-login": {"contain": [
+        S("Force HTTPS at the proxy", "Terminate TLS on a modern proxy and redirect all HTTP to HTTPS; add HSTS once HTTPS works everywhere.",
+          "# nginx\nserver { listen 80; return 301 https://$host$request_uri; }", effort="low", kind="harden"),
+    ], "manual": ["Capture a lab login with a proxy (Burp/ZAP) or tcpdump and confirm the password is sent in clear text before and not after the fix."]},
+    "imported": {"contain": [
+        S("Virtual-patch at the WAF/proxy", "Map the finding to the WAF rule group that covers it (OWASP CRS: 941 XSS, 942 SQLi, 930 traversal, 932 command injection, 934 SSRF/Node) and enable it in blocking mode for the affected paths.", effort="medium", kind="virtual-patch"),
+        S("Limit reachability", "Restrict the affected endpoint to the QA/VPN ranges that need it.", effort="low", kind="isolate"),
+    ], "manual": ["Re-run the original tool's check after the containment is in place to confirm it is no longer exploitable."]},
     "info": {"contain": [], "manual": []},
     "config": {"contain": [], "manual": []},
 }

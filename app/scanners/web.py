@@ -23,7 +23,7 @@ from bs4 import BeautifulSoup
 
 from .. import scope
 from ..config import USER_AGENT
-from . import manifests, probes
+from . import browser, manifests, probes
 from .fingerprints import Component, match_headers, match_html, match_js, match_js_url
 
 
@@ -35,6 +35,7 @@ class WebScanResult:
     scripts: list[str] = field(default_factory=list)
     requests: int = 0
     tls: dict = field(default_factory=dict)
+    api_endpoints: list[str] = field(default_factory=list)
 
 
 def _origin(url: str) -> str:
@@ -61,9 +62,13 @@ class WebScanner:
         self.interval = 1.0 / max(0.2, float(options.get("rate_per_sec", 5)))
         self.max_requests = int(options.get("max_requests", 1500))
         self.baseline: Optional[dict] = None
+        self._pages_seen: list[tuple[str, httpx.Headers]] = []  # (url, headers) of crawled HTML pages
+        self._cookies: dict[str, tuple[str, str]] = {}          # cookie name -> (Set-Cookie value, url)
+        self._cleartext_forms: list[str] = []
 
     # ------------------------------------------------------------ transport
-    async def _request(self, method: str, url: str, max_bytes: int = 3_000_000) -> Optional[httpx.Response]:
+    async def _request(self, method: str, url: str, max_bytes: int = 3_000_000,
+                       headers: Optional[dict] = None) -> Optional[httpx.Response]:
         hops = 0
         while True:
             if self.cancelled():
@@ -83,7 +88,7 @@ class WebScanner:
             self.res.requests += 1
             try:
                 async with self.sem:
-                    req = self.client.build_request(method, url)
+                    req = self.client.build_request(method, url, headers=headers)
                     r = await self.client.send(req, stream=True)
                     body = b""
                     if method != "HEAD":
@@ -155,12 +160,15 @@ class WebScanner:
                 continue
             self.res.pages.append(str(r.url))
             self._add(match_headers(r.headers.multi_items(), str(r.url)))
+            self._observe_cookies(r)
             ctype = r.headers.get("content-type", "")
             if "html" not in ctype and not (r.content or b"").lstrip()[:15].lower().startswith((b"<!doctype", b"<html")):
                 continue
             html = (r.content or b"").decode("utf-8", "ignore")
             self._add(match_html(html, str(r.url)))
+            self._pages_seen.append((str(r.url), r.headers))
             soup = BeautifulSoup(html, "html.parser")
+            self._check_forms(soup, str(r.url))
             for s in soup.find_all("script"):
                 src = s.get("src")
                 if src:
@@ -382,6 +390,99 @@ class WebScanner:
             self._finding(category="config", severity="low", title="Software versions disclosed in HTTP response headers",
                           kb="header-disclosure", location=self.target, evidence="\n".join(sorted(set(leaks.values())))[:600])
 
+    async def _browser_crawl(self) -> None:
+        self.progress(0.4, "rendering pages in headless browser")
+        await browser.crawl(self)
+
+    # ------------------------------------------------------------ web hygiene checks (headers, cookies, CORS, forms)
+    def _observe_cookies(self, r: httpx.Response) -> None:
+        for v in r.headers.get_list("set-cookie"):
+            name = v.split("=", 1)[0].strip()
+            if name and name not in self._cookies:
+                self._cookies[name] = (v, str(r.url))
+
+    def _check_forms(self, soup: BeautifulSoup, page_url: str) -> None:
+        for form in soup.find_all("form"):
+            if not form.find("input", attrs={"type": re.compile("^password$", re.I)}):
+                continue
+            action = urljoin(page_url, form.get("action") or page_url)
+            if page_url.startswith("http://") or action.startswith("http://"):
+                self._cleartext_forms.append(f"{page_url} -> {action}")
+
+    def _security_headers(self) -> None:
+        if not self._pages_seen:
+            return
+        url, h = self._pages_seen[0]
+        lower = {k.lower(): v for k, v in h.items()}
+        csp = lower.get("content-security-policy", "")
+        missing = []
+        if not csp:
+            missing.append("Content-Security-Policy (limits the impact of XSS in code that can't be fixed)")
+        if "x-frame-options" not in lower and "frame-ancestors" not in csp:
+            missing.append("X-Frame-Options / CSP frame-ancestors (clickjacking)")
+        if url.startswith("https://") and "strict-transport-security" not in lower:
+            missing.append("Strict-Transport-Security (HTTPS downgrade)")
+        if lower.get("x-content-type-options", "").lower() != "nosniff":
+            missing.append("X-Content-Type-Options: nosniff (MIME sniffing)")
+        if "referrer-policy" not in lower:
+            missing.append("Referrer-Policy (URL/token leakage to third parties)")
+        weak = []
+        if csp and re.search(r"'unsafe-inline'|'unsafe-eval'|(?:^|\s)\*(?:\s|;|$)", csp):
+            weak.append("CSP allows 'unsafe-inline' / 'unsafe-eval' / '*', so it gives little XSS protection")
+        if missing or weak:
+            sev = "medium" if (not csp and "x-frame-options" not in lower and "frame-ancestors" not in csp) else "low"
+            self._finding(category="config", severity=sev, title=f"Missing or weak browser security headers ({len(missing) + len(weak)})",
+                          kb="security-headers", location=url,
+                          evidence="\n".join([f"missing: {m}" for m in missing] + [f"weak: {w}" for w in weak]))
+
+    def _cookie_flags(self) -> None:
+        https = self.target.startswith("https://")
+        problems = []
+        sev = "low"
+        for name, (raw, url) in self._cookies.items():
+            attrs = {a.strip().split("=", 1)[0].lower() for a in raw.split(";")[1:]}
+            sess = bool(re.search(r"sess|sid|auth|token|jwt|login|asp\.net|jsession|phpsess|connect\.sid|remember", name, re.I))
+            miss = []
+            if https and "secure" not in attrs:
+                miss.append("Secure")
+            if "httponly" not in attrs and sess:
+                miss.append("HttpOnly")
+            if "samesite" not in attrs:
+                miss.append("SameSite")
+            if miss:
+                problems.append(f"{name}: missing {', '.join(miss)}" + (" (session cookie)" if sess else ""))
+                if sess and ("HttpOnly" in miss or "Secure" in miss):
+                    sev = "medium"
+        if problems:
+            self._finding(category="config", severity=sev, title=f"Cookies without security flags ({len(problems)})", kb="cookie-flags",
+                          location=self.target, evidence="\n".join(problems[:20]))
+
+    async def _cors_check(self) -> None:
+        """Send two ordinary GETs with a foreign Origin header and see whether the app trusts it. No state is changed."""
+        tests = (("https://eolscan-cors-check.invalid", "arbitrary origin"), ("null", "'null' origin"))
+        hits = []
+        sev = "low"
+        for origin, label in tests:
+            r = await self._request("GET", self.target, headers={"Origin": origin})
+            if r is None:
+                continue
+            acao = r.headers.get("access-control-allow-origin", "")
+            creds = r.headers.get("access-control-allow-credentials", "").lower() == "true"
+            if acao == origin:
+                hits.append(f"{label} reflected in Access-Control-Allow-Origin" + (" WITH credentials" if creds else ""))
+                sev = "high" if creds else max(sev, "medium", key=["low", "medium", "high"].index)
+            elif acao == "*" and origin != "null":
+                hits.append("Access-Control-Allow-Origin: * (any site can read unauthenticated responses)")
+        if hits:
+            self._finding(category="config", severity=sev, title="Permissive CORS policy", kb="cors", location=self.target,
+                          evidence="\n".join(hits))
+
+    def _cleartext_login(self) -> None:
+        if self._cleartext_forms:
+            self._finding(category="config", severity="medium", title="Password form served or submitted over plain HTTP",
+                          kb="cleartext-login", location=self._cleartext_forms[0].split(" -> ")[0],
+                          evidence="\n".join(sorted(set(self._cleartext_forms))[:10]))
+
     # ------------------------------------------------------------ main
     async def run(self) -> WebScanResult:
         # asyncio primitives must be created inside the running loop (py3.9)
@@ -403,7 +504,10 @@ class WebScanner:
                 raise RuntimeError(f"target not reachable or out of scope: {self.target}")
             await self._baseline()
             await self._crawl()
+            if self.opt.get("render_js") and not self.cancelled():
+                await self._browser_crawl()
             if self.mode in ("safe", "active") and not self.cancelled():
+                await self._cors_check()
                 await self._probes()
             if self.mode == "active" and not self.cancelled():
                 self.progress(0.88, "HTTP method / directory listing checks")
@@ -417,4 +521,7 @@ class WebScanner:
         except scope.OutOfScope:
             pass
         self._header_disclosure()
+        self._security_headers()
+        self._cookie_flags()
+        self._cleartext_login()
         return self.res

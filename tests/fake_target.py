@@ -15,10 +15,22 @@ INDEX = """<!doctype html><html><head><title>Legacy QA App</title>
 <script src="/static/js/jquery.min.js"></script>
 <script src="/static/vendor/angular.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.18.1/moment.min.js"></script>
-</head><body ng-app><a href="/about">About</a><a href="/logout">Logout</a></body></html>"""
+</head><body ng-app><a href="/about">About</a><a href="/login">Login</a><a href="/app">Dashboard (SPA)</a><a href="/logout">Logout</a></body></html>"""
+LOGIN = """<html><body><form method="post" action="/login"><input name="user"><input type="password" name="pass"><button>Sign in</button></form></body></html>"""
+# A single-page app shell: the library is only loaded by JavaScript, so a plain HTTP crawl can't see it.
+SPA = """<!doctype html><html><head><title>Dashboard</title></head><body><div id="root">Loading…</div>
+<script>var s=document.createElement('script');s.src='/static/app/'+'bundle-'+'7f3a.js';document.head.appendChild(s);
+fetch('/api/v1/widgets').then(function(){});</script></body></html>"""
+# Fake library build with no banner comment; only its runtime global reveals the version.
+BUNDLE = "window.Vue={version:'2.5.17'};window.Handlebars={VERSION:'4.0.11'};document.getElementById('root').textContent='ready';"
+
 FILES = {
     "/": ("text/html", INDEX),
     "/about": ("text/html", "<html><body>About <a href='/'>home</a></body></html>"),
+    "/login": ("text/html", LOGIN),
+    "/app": ("text/html", SPA),
+    "/static/app/bundle-7f3a.js": ("application/javascript", BUNDLE),
+    "/api/v1/widgets": ("application/json", "[]"),
     "/static/js/jquery.min.js": ("application/javascript", JQ),
     "/static/vendor/angular.js": ("application/javascript", NG),
     "/package.json": ("application/json", '{"name":"legacy","dependencies":{"lodash":"4.17.4","express":"4.15.2"}}'),
@@ -46,6 +58,10 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("X-Powered-By", "PHP/5.6.40")
         self.send_header("Set-Cookie", "PHPSESSID=abc; path=/")
+        origin = self.headers.get("Origin")
+        if origin:  # misconfigured CORS: trusts any origin, with credentials
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Credentials", "true")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         if not body_only:

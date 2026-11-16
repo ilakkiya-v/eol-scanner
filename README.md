@@ -2,8 +2,9 @@
 
 Finds **end-of-life and vulnerable components** in authorized web apps (live scan) and source code (zip upload), and tells you how to **contain** them when the code will never be changed.
 
-- **Web scan**: crawls the target, fingerprints server, framework, CMS and JS-library versions from headers, HTML, JS banners, error pages and exposed lockfiles, then maps each one to its lifecycle (endoflife.date) and known CVEs (OSV.dev).
-- **Code review**: upload `.zip`/`.tar.gz`. The tool parses npm, PyPI, Maven/Gradle, Composer, RubyGems, Go, NuGet, Dockerfile `FROM`, runtime pins, vendored JS and bundled JARs (via `pom.properties`), and flags risky legacy patterns. It **never executes** the code.
+- **Web scan**: crawls the target, fingerprints server, framework, CMS and JS-library versions from headers, HTML, JS banners, error pages and exposed lockfiles, then maps each one to its lifecycle (endoflife.date) and known CVEs (OSV.dev). It also checks for exposed files and consoles, risky HTTP methods, legacy TLS, missing security headers, cookie flags, permissive CORS and login forms over HTTP. An optional **headless-browser crawl** renders single-page apps so libraries loaded by JavaScript are found too.
+- **Code review**: upload `.zip`/`.tar.gz`. The tool parses npm, PyPI, Maven/Gradle, Composer, RubyGems, Go, NuGet, Dockerfile `FROM`, runtime pins, vendored JS and bundled JARs (via `pom.properties`), and flags risky legacy patterns plus injection-prone code (SQL, OS command, XSS, file paths, SSRF, XXE, open redirects) in Java, Python, PHP, JavaScript/Node, C#/ASP.NET and classic ASP. It **never executes** the code.
+- **Import other tools' results**: OWASP ZAP, Burp Suite, Semgrep, SARIF (CodeQL, Snyk Code, Checkmarx, SonarQube, Bandit…) and Nuclei. Imported findings get the same containment advice and can be merged into an existing scan for one report.
 - **Containment advice** for every finding: network isolation, WAF/virtual-patch rules, proxy config snippets (nginx/Apache/IIS), hardening, detection, extended-support options, and **manual lab verification steps** for the serious ones.
 - **Optional AI assist**: Claude (Anthropic API) or a local Ollama model gives tailored containment plans and a deeper code review. It's off by default, and by default no source code is sent.
 - **Exports**: HTML, Markdown, CSV, JSON.
@@ -62,6 +63,14 @@ The gateway connection only works with gateways that speak the Anthropic Message
 | Safe (default) | Passive, plus about 40 GETs for well-known disclosure files (lockfiles, `.git/HEAD`, `server-status`, phpinfo…) and a random 404 for error-page fingerprinting. |
 | Active | Safe, plus product version endpoints (Grafana, Jira, GitLab, Solr…), admin/debug consoles (Tomcat manager, actuator, Werkzeug, Ignition…), OPTIONS/TRACE, directory listing and a legacy TLS 1.0/1.1 handshake test. **No exploit payloads.** |
 
+Safe and Active also send two ordinary GETs with a foreign `Origin` header to check CORS. Every mode checks security headers, cookie flags and password forms on the pages it loads.
+
+**Headless-browser crawl** (optional, any mode): tick *Render pages in a headless browser* under Advanced. It needs `pip install -r requirements-browser.txt && playwright install chromium`, or the Docker build arg `WITH_BROWSER=1`. The browser's requests go through the same scope allowlist (out-of-scope requests are aborted, never sent), rate limit and request budget. Service workers and downloads are blocked.
+
+### What this is and isn't
+
+It covers end-of-life and known-vulnerable components, exposures, configuration weaknesses and pattern-level code issues, with containment advice for each. It does **not** fuzz parameters or test business logic or access control. For those, run OWASP ZAP or Burp (dynamic testing) and Semgrep or CodeQL (data-flow code analysis), then **Import** their results here to get containment advice in the same report. Code-pattern findings show where to look; confirm each one before reporting it.
+
 Guardrails: every request (and every redirect hop) is checked against the scope allowlist. Scans also have a rate limit, a concurrency cap and a request budget. The operator name, ticket and authorization attestation are recorded per scan. Sensitive responses (`.env`, actuator `/env`) are redacted in evidence.
 
 ## Layout
@@ -73,10 +82,11 @@ app/
   scope.py           allowlist enforcement
   analysis.py        detections → lifecycle + CVEs → prioritized findings
   eol/               endoflife.date snapshot, curated additions, OSV client
-  scanners/          web.py, code.py, fingerprints.py, manifests.py, probes.py
+  scanners/          web.py, browser.py (optional headless crawl), code.py, fingerprints.py, manifests.py, probes.py
+  importers.py       ZAP / Burp / Semgrep / SARIF / Nuclei report parsers
   advisor/           mitigations.py (containment KB), llm.py (optional Claude/Ollama)
   static/            dependency-free UI (works offline)
-tests/               test_core.py, fake_target.py (local legacy-looking app), fixtures/
+tests/               test_core.py, fake_target.py (local legacy-looking app), fake_gateway.py, fixtures/ (legacy app, tool reports)
 ```
 
 Extending: add fingerprints in `scanners/fingerprints.py`, probes in `scanners/probes.py`, lifecycle data for untracked products in `eol/data/curated.json`, and containment guidance in `advisor/mitigations.py`.

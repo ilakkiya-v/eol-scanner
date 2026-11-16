@@ -1,0 +1,5 @@
+{"version":"1.90.0","errors":[],"paths":{"scanned":["app/views.py"]},"results":[
+ {"check_id":"python.django.security.injection.sql.sql-injection-using-raw","path":"app/views.py","start":{"line":42,"col":5},"end":{"line":42,"col":60},"extra":{"message":"Detected user input used in a raw SQL query.","severity":"ERROR","lines":"cursor.execute(\"SELECT * FROM t WHERE id=%s\" % request.GET['id'])","metadata":{"cwe":["CWE-89: Improper Neutralization of Special Elements used in an SQL Command"],"confidence":"HIGH","references":["https://docs.djangoproject.com/en/stable/topics/security/"]}}},
+ {"check_id":"python.django.security.injection.sql.sql-injection-using-raw","path":"app/reports.py","start":{"line":9},"extra":{"message":"Detected user input used in a raw SQL query.","severity":"ERROR","lines":"cursor.execute(q)","metadata":{"cwe":["CWE-89"]}}},
+ {"check_id":"python.lang.security.audit.subprocess-shell-true","path":"app/tasks.py","start":{"line":7},"extra":{"message":"subprocess call with shell=True","severity":"WARNING","lines":"subprocess.call(cmd, shell=True)","metadata":{"cwe":["CWE-78: OS Command Injection"]}}}
+]}
