@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EOL Scanner</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23c2410c'/%3E%3Cpath d='M9 9h14v3H13v2.5h8v3h-8V20h10v3H9z' fill='white'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#/">
+    <span class="logo">E</span>
+    <span><b>EOL Scanner</b><small>legacy exposure &amp; containment</small></span>
+  </a>
+  <nav id="nav">
+    <a href="#/" data-r="dashboard">Dashboard</a>
+    <a href="#/new-web" data-r="new-web">Web scan</a>
+    <a href="#/new-code" data-r="new-code">Code review</a>
+    <a href="#/lookup" data-r="lookup">EOL lookup</a>
+    <a href="#/settings" data-r="settings">Settings</a>
+  </nav>
+  <button id="themeBtn" class="ghost icon" title="Toggle theme" aria-label="Toggle theme">◐</button>
+</header>
+<main id="app"><p class="muted">Loading…</p></main>
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

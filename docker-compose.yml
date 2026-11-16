@@ -1,0 +1,23 @@
+services:
+  eolscan:
+    build: .
+    image: eolscan:latest
+    ports:
+      - "127.0.0.1:8080:8080"   # local only; change to 0.0.0.0 to share on a team VM (set EOLSCAN_USER/PASSWORD!)
+    volumes:
+      - eolscan-data:/data
+      # Trust your corporate CA for lab TLS + proxy (optional):
+      # - ./corp-ca.pem:/etc/ssl/certs/corp-ca.pem:ro
+    environment:
+      # EOLSCAN_USER: admin
+      # EOLSCAN_PASSWORD: change-me
+      # ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      # HTTPS_PROXY: http://proxy.corp:8080
+      # SSL_CERT_FILE: /etc/ssl/certs/corp-ca.pem
+      EOLSCAN_MAX_UPLOAD_MB: "500"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # reach a local Ollama
+    restart: unless-stopped
+
+volumes:
+  eolscan-data:

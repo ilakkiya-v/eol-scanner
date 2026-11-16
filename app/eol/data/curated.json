@@ -1,0 +1,31 @@
+{
+  "_comment": "Lifecycle data for components endoflife.date does not track. Same shape as endoflife.date cycles plus an optional 'note'. Edit freely; entries here override nothing in the snapshot unless the product is missing there.",
+  "products": {
+    "iis": [
+      {"cycle": "10.0", "eol": false, "note": "IIS 10 lifecycle follows the host Windows Server version (2016/2019/2022/2025). Check the OS build."},
+      {"cycle": "8.5", "eol": "2023-10-10", "note": "Ships with Windows Server 2012 R2 (out of extended support; ESU only)."},
+      {"cycle": "8.0", "eol": "2023-10-10", "note": "Ships with Windows Server 2012 (out of extended support; ESU only)."},
+      {"cycle": "7.5", "eol": "2020-01-14", "note": "Ships with Windows Server 2008 R2."},
+      {"cycle": "7.0", "eol": "2020-01-14", "note": "Ships with Windows Server 2008."},
+      {"cycle": "6.0", "eol": "2015-07-14", "note": "Ships with Windows Server 2003."}
+    ],
+    "moment": [
+      {"cycle": "2", "eol": "2020-09-15", "note": "Moment.js is a legacy project in maintenance mode; no new features and only critical security fixes at the maintainers' discretion."}
+    ],
+    "request": [
+      {"cycle": "2", "eol": "2020-02-11", "note": "The npm 'request' package is fully deprecated."}
+    ],
+    "node-sass": [
+      {"cycle": "9", "eol": "2024-07-24", "note": "LibSass/node-sass reached end of life; use Dart Sass ('sass')."},
+      {"cycle": "8", "eol": "2024-07-24"}, {"cycle": "7", "eol": "2024-07-24"}, {"cycle": "6", "eol": "2024-07-24"},
+      {"cycle": "5", "eol": "2024-07-24"}, {"cycle": "4", "eol": "2024-07-24"}
+    ],
+    "jquery-mobile": [
+      {"cycle": "1", "eol": "2021-10-07", "note": "jQuery Mobile was deprecated by the OpenJS Foundation."}
+    ],
+    "yui": [
+      {"cycle": "3", "eol": "2014-08-29", "note": "Yahoo stopped all new development on YUI."},
+      {"cycle": "2", "eol": true}
+    ]
+  }
+}
