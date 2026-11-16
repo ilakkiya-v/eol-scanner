@@ -91,6 +91,7 @@ powershell -ExecutionPolicy Bypass -File scripts\start-windows.ps1
 - Keep the window open while you use it. Press **Ctrl+C** or close the window to stop.
 - Other port: add `-Port 8766`.
 - Settings and scan history are saved in the `data` folder inside `eol-scanner`.
+- Page won't load? Double-click **`diagnose-windows.cmd`**. It changes nothing and tells you what's wrong.
 
 ### 5. If scripts are blocked: do it by hand
 
@@ -227,6 +228,7 @@ Nothing else is installed.
 
 | Problem | Fix |
 |---|---|
+| Browser says "can't reach this page" for 127.0.0.1 | 1) Use **http://127.0.0.1:8765**: the scanner moved from 8080 to 8765. 2) Keep the start window open: if it shows an error or closes, re-run `install-windows.cmd`. 3) Double-click **`diagnose-windows.cmd`**: it checks the install, the port, a proxy-free connection and your proxy bypass list, and says what to fix. 4) If it says the browser sends 127.0.0.1 to the corporate proxy, add `127.0.0.1;localhost` to the proxy exceptions or try `http://localhost:8765`. |
 | Typing `python` opens the Microsoft Store | That's a placeholder, not Python. Install Python as in step 1, or turn off the placeholder: **Settings → Apps → Advanced app settings → App execution aliases**, then switch off `python.exe` and `python3.exe`. Open a new window afterwards. |
 | `py` / `python` is not recognized | Python isn't on PATH. Re-run the Python installer, choose **Modify**, tick **Add Python to environment variables**, then open a new PowerShell window. |
 | "running scripts is disabled on this system" | Use the `.cmd` launchers, or the `-ExecutionPolicy Bypass` commands above. If Group Policy blocks even that, use the manual commands in step 5. |

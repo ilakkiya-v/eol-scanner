@@ -55,17 +55,36 @@ if ($busy) {
     exit 1
 }
 
+# Catch a broken install (e.g. after `git pull` added a package) before starting, with a clear message.
+$ErrorActionPreference = "Continue"   # PowerShell 5.1 would otherwise stop at the first stderr line
+& $venvPy -c "import app.main" 2>&1 | ForEach-Object { "$_" } | Out-Host
+$loadExit = $LASTEXITCODE
+$ErrorActionPreference = "Stop"
+if ($loadExit -ne 0) {
+    Write-Host ""
+    Write-Host "The scanner could not load (see the error above). Re-run the installer, then start again:" -ForegroundColor Red
+    Write-Host "  powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1"
+    exit 1
+}
+
 $url = "http://127.0.0.1:$Port"
-Write-Host "EOL Scanner starting on $url  (data: $env:EOLSCAN_DATA)  - press Ctrl+C to stop" -ForegroundColor Green
+Write-Host ""
+Write-Host "EOL Scanner is starting. Open:  $url" -ForegroundColor Green
+Write-Host "(data: $env:EOLSCAN_DATA)  Keep this window open; press Ctrl+C to stop." -ForegroundColor Green
+Write-Host ""
 if (-not $NoBrowser) {
-    # Open the browser once the server answers (up to ~20 s).
-    Start-Job -ArgumentList $url -ScriptBlock {
-        param($u)
-        for ($i = 0; $i -lt 40; $i++) {
-            try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 "$u/api/health" | Out-Null; Start-Process $u; break }
-            catch { Start-Sleep -Milliseconds 500 }
+    # Open the browser once the port accepts connections (up to ~60 s). A raw TCP check is used on purpose:
+    # Invoke-WebRequest follows the corporate proxy settings and can fail for 127.0.0.1.
+    Start-Job -ArgumentList $url, $Port -ScriptBlock {
+        param($u, $p)
+        for ($i = 0; $i -lt 120; $i++) {
+            $c = New-Object System.Net.Sockets.TcpClient
+            try { $c.Connect("127.0.0.1", $p); $c.Close(); Start-Process $u; return } catch { Start-Sleep -Milliseconds 500 } finally { $c.Dispose() }
         }
     } | Out-Null
 }
 
 & $venvPy -m uvicorn app.main:app --host $bind --port $Port
+Write-Host ""
+Write-Host "The scanner has stopped. If it stopped right after starting, the reason is in the lines above." -ForegroundColor Yellow
+Write-Host "For a full check run:  powershell -ExecutionPolicy Bypass -File scripts\diagnose-windows.ps1" -ForegroundColor Yellow

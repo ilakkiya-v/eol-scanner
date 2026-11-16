@@ -224,6 +224,7 @@ Restart the scanner. Your settings and scans are kept in `data/`.
 
 | Problem | Fix |
 |---|---|
+| Browser says "can't reach this page" for 127.0.0.1 | 1) Use **http://127.0.0.1:8765**: the scanner moved from 8080 to 8765. 2) Keep the start window open: if it shows an error or closes, re-run `install-windows.cmd`. 3) Double-click **`diagnose-windows.cmd`**: it checks the install, the port, a proxy-free connection and your proxy bypass list, and says what to fix. 4) If it says the browser sends 127.0.0.1 to the corporate proxy, add `127.0.0.1;localhost` to the proxy exceptions or try `http://localhost:8765`. |
 | Scan says "out of scope" | Add the host to **Settings → Scope allowlist**. Use exact host, `*.domain`, CIDR or `host:port`. |
 | Test connection: "Claude Code not found" | Install Claude Code (section 3), open a **new** terminal, run `claude` once, or paste its path in Settings. |
 | Claude Code connection doesn't work in Docker | Expected: the container can't see your `claude` install or login. Run the scanner with Python (section 1) to use Claude Code. |
