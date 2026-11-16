@@ -6,7 +6,7 @@ services:
         WITH_BROWSER: "0"   # set to "1" for the headless-browser crawl (single-page apps); adds ~400 MB
     image: eolscan:latest
     ports:
-      - "127.0.0.1:8080:8080"   # local only; change to 0.0.0.0 to share on a team VM (set EOLSCAN_USER/PASSWORD!)
+      - "127.0.0.1:8765:8765"   # local only; change to 0.0.0.0 to share on a team VM (set EOLSCAN_USER/PASSWORD!)
     volumes:
       - eolscan-data:/data
       # Trust your corporate CA for lab TLS + proxy (optional):

@@ -20,14 +20,14 @@ New here, or setting up on a work laptop? Follow **[docs/GETTING_STARTED.md](doc
 
 
 ```bash
-docker compose up -d --build        # → http://127.0.0.1:8080
+docker compose up -d --build        # → http://127.0.0.1:8765  (not 8080, so it doesn't clash with Burp/ZAP)
 ```
 
 Without Docker (Python 3.9+):
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # + requirements-llm.txt for Claude (incl. Bedrock/Vertex/AWS/GCP clients)
-EOLSCAN_DATA=./data .venv/bin/uvicorn app.main:app --port 8080
+EOLSCAN_DATA=./data .venv/bin/uvicorn app.main:app --port 8765
 ```
 
 First steps: **Settings → Scope**: add the authorized lab hosts. An empty allowlist blocks every scan.

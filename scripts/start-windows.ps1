@@ -4,10 +4,10 @@
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File scripts\start-windows.ps1
-  powershell -ExecutionPolicy Bypass -File scripts\start-windows.ps1 -Port 8090
+  powershell -ExecutionPolicy Bypass -File scripts\start-windows.ps1 -Port 8766
 
 .PARAMETER Port
-  Port to listen on (default 8080).
+  Port to listen on (default 8765; 8080 is avoided because Burp Suite and ZAP proxies use it).
 
 .PARAMETER Share
   Listen on all network interfaces so teammates can reach it. Requires EOLSCAN_USER and EOLSCAN_PASSWORD
@@ -21,7 +21,7 @@
     $env:ANTHROPIC_API_KEY = "sk-ant-..."
 #>
 param(
-    [int]$Port = 8080,
+    [int]$Port = 8765,
     [switch]$Share,
     [switch]$NoBrowser
 )
@@ -51,7 +51,7 @@ if ($Share) {
 
 $busy = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
 if ($busy) {
-    Write-Host "Port $Port is already in use. Use another one:  scripts\start-windows.ps1 -Port 8090" -ForegroundColor Red
+    Write-Host "Port $Port is already in use (another app, or EOL Scanner is already running). Use another one:  scripts\start-windows.ps1 -Port 8766" -ForegroundColor Red
     exit 1
 }
 

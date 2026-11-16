@@ -80,7 +80,7 @@ $env:PIP_CERT = "C:\certs\corp-ca.pem"     # only if your company inspects TLS
 
 ### 4. Start it
 
-**Easiest:** double-click **`start-windows.cmd`**. Your browser opens **http://127.0.0.1:8080** once the server is ready.
+**Easiest:** double-click **`start-windows.cmd`**. Your browser opens **http://127.0.0.1:8765** once the server is ready.
 
 **Or from PowerShell:**
 
@@ -89,7 +89,7 @@ powershell -ExecutionPolicy Bypass -File scripts\start-windows.ps1
 ```
 
 - Keep the window open while you use it. Press **Ctrl+C** or close the window to stop.
-- Other port: add `-Port 8090`.
+- Other port: add `-Port 8766`.
 - Settings and scan history are saved in the `data` folder inside `eol-scanner`.
 
 ### 5. If scripts are blocked: do it by hand
@@ -108,7 +108,7 @@ Then start it each time with:
 ```powershell
 cd $HOME\Documents\eol-scanner
 $env:EOLSCAN_DATA = "$PWD\data"
-.venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8080
+.venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 ```
 
 For the browser crawl, also run:
@@ -129,7 +129,7 @@ For the browser crawl, also run:
    docker compose up -d --build
    ```
 
-3. Open **http://127.0.0.1:8080**.
+3. Open **http://127.0.0.1:8765**.
 
 Notes:
 
@@ -236,9 +236,9 @@ Nothing else is installed.
 | TLS errors against lab sites | Leave **Verify TLS** off (default) for internal certificates, or set `$env:SSL_CERT_FILE` to the company CA file. |
 | Windows Firewall asks about Python | Only happens with `-Share`. Allow it on **Private / Domain** networks only. |
 | Antivirus quarantines files under `tests\fixtures` | Those are sample "vulnerable" files used by the self-tests. Restore them or ask IT to exclude the folder. The scanner itself still works; only the self-tests need them. |
-| Port 8080 in use | `scripts\start-windows.ps1 -Port 8090` |
+| Port 8765 in use | `scripts\start-windows.ps1 -Port 8766` |
 | Browser option is greyed out | Install with `-WithBrowser`, or run the two browser commands from step 5. |
 | "Chromium is not installed" in the scan log | Run `.venv\Scripts\python -m playwright install chromium`. If downloads are blocked, ask IT for a mirror and set `$env:PLAYWRIGHT_DOWNLOAD_HOST`. |
 | Long path errors when unzipping | Clone or unzip to a short path such as `C:\tools\eol-scanner`. |
 
-Share with your team: run `start-windows.ps1 -Share` after setting `$env:EOLSCAN_USER` and `$env:EOLSCAN_PASSWORD`. Teammates then open `http://<your-pc-name>:8080`.
+Share with your team: run `start-windows.ps1 -Share` after setting `$env:EOLSCAN_USER` and `$env:EOLSCAN_PASSWORD`. Teammates then open `http://<your-pc-name>:8765`.

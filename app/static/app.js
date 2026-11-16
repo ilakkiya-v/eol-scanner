@@ -39,12 +39,56 @@ const store = {
 (function initTheme() {
   const t = store.get("theme", null);
   if (t) document.documentElement.dataset.theme = t;
+  const current = () => document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  const label = () => $("#themeBtn").setAttribute("aria-label", `Switch to ${current() === "dark" ? "light" : "dark"} theme`);
+  label();
   $("#themeBtn").onclick = () => {
-    const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-    const next = cur === "dark" ? "light" : "dark";
-    document.documentElement.dataset.theme = next; store.set("theme", next);
+    const next = current() === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next; store.set("theme", next); label();
   };
 })();
+
+// ---------------------------------------------------------------- accessibility pass (runs after every render)
+let _uid = 0;
+function enhance(root = app) {
+  // 1. Tie each <label> to the field that follows it (screen readers announce the label; clicking it focuses the field)
+  $$("label:not([for])", root).forEach((l) => {
+    if (l.querySelector("input,select,textarea")) return;
+    let el = l.nextElementSibling;
+    while (el && !el.matches("input,select,textarea") && !(el.querySelector && el.querySelector("input,select,textarea"))) el = el.nextElementSibling;
+    const field = el && (el.matches("input,select,textarea") ? el : el.querySelector("input,select,textarea"));
+    if (!field || field.type === "hidden") return;
+    if (!field.id) field.id = `f${++_uid}`;
+    l.htmlFor = field.id;
+  });
+  // 2. Click-only widgets become keyboard-operable
+  $$(".drop", root).forEach((d) => {
+    if (d.getAttribute("role")) return;
+    d.setAttribute("role", "button"); d.tabIndex = 0;
+    d.setAttribute("aria-label", (d.querySelector("b")?.textContent || "Choose a file") + ". Press Enter to choose a file.");
+    d.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); d.click(); } });
+  });
+  // 3. State for assistive tech
+  $$(".tabs", root).forEach((t) => {
+    t.setAttribute("role", "tablist");
+    $$("button", t).forEach((b) => { b.setAttribute("role", "tab"); b.setAttribute("aria-selected", b.classList.contains("on") ? "true" : "false"); });
+  });
+  $$(".chip[data-sev]", root).forEach((c) => c.setAttribute("aria-pressed", c.classList.contains("on") ? "true" : "false"));
+  $$(".progress", root).forEach((p) => {
+    const bar = p.firstElementChild; const v = Math.round(parseFloat(bar && bar.style.width) || 0);
+    p.setAttribute("role", "progressbar"); p.setAttribute("aria-valuemin", "0"); p.setAttribute("aria-valuemax", "100");
+    p.setAttribute("aria-valuenow", String(v)); if (!p.getAttribute("aria-label")) p.setAttribute("aria-label", "Progress");
+  });
+  $$("button.copy", root).forEach((b) => b.setAttribute("aria-label", "Copy this snippet"));
+  // 4. Page title follows the page heading
+  const h1 = $("h1", root);
+  document.title = h1 ? `${h1.textContent.trim().slice(0, 60)} · EOL Scanner` : "EOL Scanner";
+}
+let _enhanceQueued = false;
+new MutationObserver(() => {
+  if (_enhanceQueued) return; _enhanceQueued = true;
+  requestAnimationFrame(() => { _enhanceQueued = false; enhance(); });
+}).observe(app, { childList: true, subtree: true });
 
 document.addEventListener("click", (e) => {
   const b = e.target.closest("button.copy");
@@ -60,9 +104,15 @@ const routes = { "": dashboard, "new-web": newWeb, "new-code": newCode, import: 
 function route() {
   clearInterval(pollTimer);
   const [name, arg] = location.hash.replace(/^#\/?/, "").split("/");
-  $$("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.r === (name || "dashboard")));
-  (routes[name] || dashboard)(arg).catch((e) => { app.innerHTML = `<div class="notice err">${esc(e.message)}</div>`; });
+  $$("#nav a").forEach((a) => {
+    const on = a.dataset.r === (name || "dashboard");
+    a.classList.toggle("active", on);
+    if (on) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+  });
+  (routes[name] || dashboard)(arg).catch((e) => { app.innerHTML = `<div class="notice err" role="alert">${esc(e.message)}</div>`; });
   window.scrollTo(0, 0);
+  if (route._ran) app.focus({ preventScroll: true });  // move screen-reader focus to the new page (not on first load)
+  route._ran = true;
 }
 window.addEventListener("hashchange", route);
 route();
@@ -93,9 +143,9 @@ async function dashboard() {
   <div class="panel"><h2>Recent scans</h2>
   ${scans.length ? `<div class="table-wrap"><table><thead><tr><th>Target</th><th>Type</th><th>Status</th><th>Critical / High</th><th class="hide-sm">EOL</th><th class="hide-sm">Operator</th><th>When</th></tr></thead><tbody>
     ${scans.map((s) => { const c = s.summary?.severity_counts || {}; return `<tr class="click" data-id="${esc(s.id)}">
-      <td><b>${esc(s.target)}</b><div class="muted small">${esc(s.id)}${s.ticket ? " · " + esc(s.ticket) : ""}</div></td>
+      <td><a class="rowlink" href="#/scan/${esc(s.id)}">${esc(s.target)}</a><div class="muted small">${esc(s.id)}${s.ticket ? " · " + esc(s.ticket) : ""}</div></td>
       <td>${kindLabel(s)}</td><td>${statusBadge(s.status)}</td>
-      <td>${["done", "cancelled"].includes(s.status) ? `<span style="color:var(--crit)">${c.critical || 0}</span> / <span style="color:var(--high)">${c.high || 0}</span>` : ["running", "queued"].includes(s.status) ? `<div class="progress" style="width:90px"><div style="width:${(s.progress || 0) * 100}%"></div></div>` : `<span class="muted">-</span>`}</td>
+      <td>${["done", "cancelled"].includes(s.status) ? `<span style="color:var(--crit)">${c.critical || 0}</span> / <span style="color:var(--high)">${c.high || 0}</span>` : ["running", "queued"].includes(s.status) ? `<div class="progress" style="width:90px" aria-label="Scan progress"><div style="width:${(s.progress || 0) * 100}%"></div></div>` : `<span class="muted">-</span>`}</td>
       <td class="hide-sm">${s.summary?.eol_components ?? "-"}</td><td class="hide-sm">${esc(s.operator)}</td><td class="muted">${ago(s.created)}</td></tr>`; }).join("")}
   </tbody></table></div>` : `<div class="empty">No scans yet.</div>`}</div>`;
   $$("tr.click").forEach((tr) => (tr.onclick = () => (location.hash = `#/scan/${tr.dataset.id}`)));
@@ -288,7 +338,7 @@ async function scanView(id) {
 }
 
 function updateProgress(s) {
-  const p = $("#prog"); if (p) p.style.width = `${(s.progress || 0) * 100}%`;
+  const p = $("#prog"); if (p) { p.style.width = `${(s.progress || 0) * 100}%`; p.parentElement.setAttribute("aria-valuenow", String(Math.round((s.progress || 0) * 100))); }
   const m = $("#progMsg"); if (m) m.textContent = s.message || "";
   const lg = $("#log"); if (lg && ui.tab === "log") lg.innerHTML = logHtml(s.log);
 }
@@ -314,7 +364,7 @@ function renderScan(scan, findings) {
       <button class="danger" id="del">Delete</button>`}
     </div></div>
   ${running ? `<div class="panel"><div class="row" style="justify-content:space-between"><b>Scanning…</b><span class="muted small" id="progMsg">${esc(scan.message)}</span></div>
-    <div class="progress" style="margin-top:8px"><div id="prog" style="width:${(scan.progress || 0) * 100}%"></div></div></div>` : ""}
+    <div class="progress" style="margin-top:8px" aria-label="Scan progress"><div id="prog" style="width:${(scan.progress || 0) * 100}%"></div></div></div>` : ""}
   ${scan.status === "error" ? `<div class="notice err"><b>Scan failed:</b> ${esc(scan.message)}</div>` : ""}
   ${!running ? `<div class="stats">
     <div class="stat crit"><div class="v">${c.critical || 0}</div><div class="l">Critical</div></div>
@@ -349,7 +399,7 @@ function renderFindings(body, findings, running) {
   const cats = [...new Set(findings.map((f) => f.category))].sort();
   body.innerHTML = `
   <div class="filters">
-    ${SEV.map((s) => `<button class="chip ${ui.sev.has(s) ? "on" : ""}" data-sev="${s}">${s} (${findings.filter((f) => f.severity === s).length})</button>`).join("")}
+    ${SEV.map((s) => `<button type="button" class="chip ${ui.sev.has(s) ? "on" : ""}" data-sev="${s}">${s} <span class="muted">${findings.filter((f) => f.severity === s).length}</span></button>`).join("")}
     <select id="cat"><option value="">All categories</option>${cats.map((c) => `<option ${ui.cat === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>
     <input type="text" id="q" placeholder="Filter by text, CVE, product…" value="${esc(ui.q)}">
   </div><div id="list"></div>`;

@@ -99,4 +99,4 @@ if (-not $SkipTests) {
 Step "Done"
 Write-Host "Start the scanner with:" -ForegroundColor Green
 Write-Host "  powershell -ExecutionPolicy Bypass -File scripts\start-windows.ps1"
-Write-Host "Then open http://127.0.0.1:8080 and add your lab hosts in Settings -> Scope allowlist."
+Write-Host "Then open http://127.0.0.1:8765 and add your lab hosts in Settings -> Scope allowlist."

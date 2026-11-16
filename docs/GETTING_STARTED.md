@@ -29,7 +29,7 @@ You need **Python 3.10 or newer** and **Git**, or the repo downloaded as a ZIP. 
    ```
 
 3. Open the `eol-scanner` folder and double-click **`install-windows.cmd`**. It ends with `ok` lines and **Done**.
-4. Double-click **`start-windows.cmd`**. Your browser opens **http://127.0.0.1:8080**.
+4. Double-click **`start-windows.cmd`**. Your browser opens **http://127.0.0.1:8765**.
 
 More options and Windows troubleshooting: [INSTALL_WINDOWS.md](INSTALL_WINDOWS.md).
 
@@ -40,10 +40,10 @@ git clone https://github.com/<owner>/eol-scanner.git
 cd eol-scanner
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt -r requirements-llm.txt
-EOLSCAN_DATA=./data .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8080
+EOLSCAN_DATA=./data .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8765
 ```
 
-Then open **http://127.0.0.1:8080**. Leave the terminal open while you use it.
+Then open **http://127.0.0.1:8765**. Leave the terminal open while you use it.
 
 ### Optional extras
 
@@ -126,7 +126,7 @@ The scanner never asks for or stores keys. Set the key as an environment variabl
 
   ```bash
   export ANTHROPIC_API_KEY=sk-ant-...
-  EOLSCAN_DATA=./data .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8080
+  EOLSCAN_DATA=./data .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8765
   ```
 
 - **Company gateway.** Set `ANTHROPIC_AUTH_TOKEN`, or `ANTHROPIC_API_KEY` if your gateway expects an `x-api-key` header. Then enter the gateway URL in Settings.
@@ -235,4 +235,4 @@ Restart the scanner. Your settings and scans are kept in `data/`.
 | Lab site unreachable | Connect to the VPN. If lab sites need the corporate proxy, tick **Route through HTTP(S)_PROXY** in the scan's Advanced section. |
 | TLS errors | Leave **Verify TLS** off for internal certificates, or set `SSL_CERT_FILE` to your company's CA. |
 | Import says "unrecognised format" | Use one of the listed exports. For Burp history, use **Save items** (XML), not "Report issues". |
-| Port 8080 in use | Start with `--port 8090` (Windows: `start-windows.ps1 -Port 8090`). |
+| Port 8765 in use | Start with `--port 8766` (Windows: `start-windows.ps1 -Port 8766`). The scanner avoids 8080 on purpose so it doesn't clash with Burp Suite or ZAP. |
