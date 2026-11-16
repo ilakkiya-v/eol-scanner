@@ -1,319 +1,238 @@
-# Getting started on a work laptop
+# EOL Scanner on your work laptop
 
-This guide takes you from a fresh laptop to a working scan in this order:
+This guide takes you from nothing to a working setup:
 
-1. Get the code.
-2. Run it.
-3. Point it at your lab.
-4. Connect it to your company's Claude (optional).
-5. Check that everything works.
+1. [Install it](#1-install)
+2. [First-time setup](#2-first-time-setup)
+3. [Connect your company's Claude (Enterprise / Mythos)](#3-connect-your-companys-claude-for-the-ai-features)
+4. [Use the three features](#4-use-the-three-features)
+5. [Check that everything works](#5-check-that-everything-works)
 
-Commands are given for **macOS / Linux** and for **Windows (PowerShell)**. On Windows, [INSTALL_WINDOWS.md](INSTALL_WINDOWS.md) has a one-click installer and Windows-specific troubleshooting.
+At the end there's [Updating](#updating) and [Troubleshooting](#troubleshooting).
 
-> Use EOL Scanner only on systems you are authorized to test. Get written approval (a ticket or change request) before scanning lab apps, and check that your company allows running a scanner from your laptop.
-
----
-
-## 1. What you need
-
-| Need | Notes |
-|---|---|
-| Access to the GitHub repo | Ask the owner to add you if it's private. |
-| `git` | macOS: `xcode-select --install`. Windows: Git for Windows, or ask IT. |
-| **Either** Docker **or** Python | Docker Desktop, Rancher Desktop or Podman all work. Without Docker, Python 3.9 or newer (3.12 recommended). |
-| Corporate VPN | Only needed while scanning lab apps. |
-| A browser | The whole tool is a web page at `http://127.0.0.1:8080`. |
-
-Corporate laptops often need IT approval for Docker. If that's a problem, use the Python option. It does the same thing.
+> Use EOL Scanner only on systems you are authorized to test. Get written approval (a ticket or change request), and check that your company allows running a scanner from your laptop and sending source code to Claude.
 
 ---
 
-## 2. Get the code
+## 1. Install
 
-Replace `<owner>` with the GitHub account or organization that holds the repo.
+You need **Python 3.10 or newer** and **Git**, or the repo downloaded as a ZIP. No admin rights are needed. Docker works too but isn't required.
+
+### Windows
+
+1. Install Python, either from your software center or https://www.python.org/downloads/windows/. Tick **Add python.exe to PATH**.
+2. Get the code:
+
+   ```powershell
+   cd $HOME\Documents
+   git clone https://github.com/<owner>/eol-scanner.git
+   ```
+
+3. Open the `eol-scanner` folder and double-click **`install-windows.cmd`**. It ends with `ok` lines and **Done**.
+4. Double-click **`start-windows.cmd`**. Your browser opens **http://127.0.0.1:8080**.
+
+More options and Windows troubleshooting: [INSTALL_WINDOWS.md](INSTALL_WINDOWS.md).
+
+### macOS / Linux
 
 ```bash
 git clone https://github.com/<owner>/eol-scanner.git
 cd eol-scanner
-```
-
-To update later, run `git pull` in the same folder, then restart the tool (see "Updating" at the end).
-
----
-
-## 3. Run it
-
-### Option A: Docker (recommended)
-
-```bash
-docker compose up -d --build
-```
-
-Open **http://127.0.0.1:8080**.
-
-- Stop it: `docker compose down`
-- Logs: `docker compose logs -f`
-
-Scan history and settings live in a Docker volume, so they survive restarts and rebuilds.
-
-### Option B: Python
-
-macOS / Linux:
-
-```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt -r requirements-llm.txt
 EOLSCAN_DATA=./data .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8080
 ```
 
-Windows (PowerShell):
+Then open **http://127.0.0.1:8080**. Leave the terminal open while you use it.
 
-```powershell
-py -3 -m venv .venv
-.venv\Scripts\pip install -r requirements.txt -r requirements-llm.txt
-$env:EOLSCAN_DATA = ".\data"
-.venv\Scripts\uvicorn app.main:app --host 127.0.0.1 --port 8080
-```
+### Optional extras
 
-Open **http://127.0.0.1:8080**. Leave the terminal open while you use it, and press Ctrl+C to stop.
-
-If `pip install` fails behind the corporate proxy, set it first:
-
-```bash
-export HTTPS_PROXY=http://proxy.corp:8080
-```
-
-On Windows: `$env:HTTPS_PROXY="http://proxy.corp:8080"`. If you also need your company's certificate authority, set `PIP_CERT=/path/corp-ca.pem`.
-
----
-
-## 4. First-time setup in the UI
-
-1. **Settings → Scope allowlist**: add the lab hosts you are authorized to scan, one per line. For example `qa-app.lab.corp`, `*.qa.corp`, `10.20.0.0/16` or `app.lab.corp:8443`. Use the deny list for anything off-limits, such as databases. **An empty allowlist blocks every scan.**
-2. **Settings → Data feeds**: while you are on a network with internet access, click **Sync EOL data**. If the lab network has no internet, do this before you connect to it. The tool still works offline using the lifecycle data that ships with it.
-3. If your lab sites use your company's own TLS certificates, leave **Verify TLS** off, which is the default. Or provide your company's CA (see Troubleshooting).
-
----
-
-## 5. Connect it to your company's Claude (optional)
-
-The scanner works without AI. Claude adds a tailored containment plan for each finding and a deeper review of uploaded code.
-
-### Important: Claude Enterprise is not the same as API access
-
-A **Claude Enterprise** seat is for claude.ai (the chat app). Tools like this one call Claude through the **API**, which is set up and billed separately. An Enterprise login does not work here, and the plan does not include API credits.
-
-Ask your Claude admin, platform team or IT which of these your company provides. The answer decides which **Connection** you pick:
-
-| What IT gives you | Connection to pick | What to set |
+| Extra | What it adds | Install |
 |---|---|---|
-| An Anthropic API key from the company's Claude Console organization | **Anthropic API (direct)** | `ANTHROPIC_API_KEY` |
-| An internal "LLM gateway" or AI proxy URL plus a token | **Company LLM gateway / proxy** | Gateway URL in the UI, plus `ANTHROPIC_AUTH_TOKEN` (or `ANTHROPIC_API_KEY` if the gateway expects an x-api-key header) |
-| Claude through AWS Bedrock | **Amazon Bedrock** | AWS region in the UI, plus your normal AWS login (SSO profile, role or keys) |
-| Claude Platform on AWS | **Claude Platform on AWS** | Region and workspace ID in the UI, plus your AWS login |
-| Claude through Google Vertex AI | **Google Vertex AI** | GCP project and region in the UI, plus `gcloud auth application-default login` |
-| Claude on Google Cloud (Anthropic managed) | **Claude on Google Cloud** | GCP project and workspace ID in the UI, plus your gcloud login |
-| Claude through Azure / Microsoft Foundry | **Microsoft Foundry** | Foundry resource name in the UI, plus `ANTHROPIC_FOUNDRY_API_KEY` |
+| Browser crawl | Finds JavaScript libraries in single-page apps (React, Angular, Vue) | Windows: `install-windows.ps1 -WithBrowser`. Mac/Linux: `.venv/bin/pip install -r requirements-browser.txt` then `.venv/bin/playwright install chromium` |
+| Semgrep | Extra data-flow rules during code review | `.venv/bin/pip install semgrep` (Windows: `.venv\Scripts\pip install semgrep`) |
 
-Questions worth asking IT at the same time:
+### Behind a corporate proxy
 
-- Is the gateway "Anthropic-compatible"? It must accept Anthropic's Messages API format. Gateways that only accept the OpenAI format won't work.
-- Which models are enabled for us?
-- Are we allowed to send source code to the model? If not, keep that setting off (it's off by default).
+Set the proxy before installing:
 
-### Where to put the key
+- Mac/Linux: `export HTTPS_PROXY=http://proxy.corp:8080`
+- Windows: `$env:HTTPS_PROXY="http://proxy.corp:8080"`
 
-Keys are **never** typed into or saved by the app. They are read from the environment of whatever runs the scanner.
-
-**Docker:**
-
-1. Create a file named `.env` next to `docker-compose.yml`. It is git-ignored.
-
-   ```
-   ANTHROPIC_API_KEY=sk-ant-...
-   # or, for a gateway:
-   ANTHROPIC_AUTH_TOKEN=...
-   ```
-
-2. In `docker-compose.yml`, under `environment:`, uncomment the matching line, for example `ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}`.
-3. For Bedrock or Vertex, also uncomment the `~/.aws` or `~/.config/gcloud` volume line.
-4. Restart with `docker compose up -d`.
-
-**Python, macOS / Linux**, in the same terminal before starting uvicorn:
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-# or: export ANTHROPIC_AUTH_TOKEN=...
-# or: export AWS_PROFILE=my-sso-profile
-```
-
-**Python, Windows**, in the same PowerShell window before starting uvicorn:
-
-```powershell
-$env:ANTHROPIC_API_KEY = "sk-ant-..."
-```
-
-### Turn it on
-
-1. Go to **Settings → AI assist**.
-2. Set **Provider** to **Claude** and pick your **Connection**.
-3. Fill in the fields that appear: gateway URL, region, project, workspace or resource.
-4. **Model**: leave `claude-opus-5-5` or pick from the list.
-   - `claude-mythos-5-2` only works if Anthropic has verified your company's organization (for example through the Cyber Verification Program). If you get a 403, use `claude-fable-5-2`, which is the same model and open to everyone.
-   - On Bedrock, the scanner adds the `anthropic.` prefix for you.
-5. Click **Test connection**. You should see `Connected · <model> · <n>s`. If you see an error, the message says what's missing, and the Troubleshooting section below covers the common ones.
-6. Click **Save**.
-
-To use it: open a finding and click **Ask AI for a tailored containment plan**. You can add environment notes first, such as "behind F5". For a code scan, open the **AI review** tab. By default only metadata (component names, versions, findings) is sent. Source code is sent only if you tick **Allow sending source-code snippets**.
+If pip reports certificate errors, also set `PIP_CERT` to your company's CA file.
 
 ---
 
-## 6. Check that it works
+## 2. First-time setup
 
-These checks use only your laptop. No VPN or lab access is needed.
-
-### a) Unit tests (under a minute)
-
-macOS / Linux:
-
-```bash
-.venv/bin/python tests/test_core.py
-```
-
-Windows: `.venv\Scripts\python tests\test_core.py`
-
-The Docker image doesn't include the tests, so run them with Python. You only need `pip install -r requirements.txt -r requirements-llm.txt` in a venv.
-
-You should see 14 lines starting with `ok`. If Playwright isn't installed, the browser test prints `skip` instead, which is fine.
-
-### b) Live scan of a fake legacy app
-
-1. Start the fake app in a second terminal:
-
-   ```bash
-   .venv/bin/python tests/fake_target.py 8899
-   ```
-
-   Windows: `.venv\Scripts\python tests\fake_target.py 8899`
-
-2. In the UI, go to **Settings → Scope** and add `127.0.0.1`.
-3. Open **Web scan**:
-   - target `http://127.0.0.1:8899`
-   - mode **Active**
-   - tick the authorization box
-   - click **Start scan**.
-4. Expect about 24 findings: Apache 2.2, PHP 5.6, AngularJS 1.5, jQuery 1.12, an exposed `.git` folder, an exposed Spring actuator, TRACE enabled, a CORS policy that trusts any site, missing security headers, a session cookie without HttpOnly, a login form over HTTP, and more.
-   With **Render pages in a headless browser** ticked (needs the browser installed, see section 8), you also get Vue 2.5 and Handlebars 4.0, which only load through JavaScript.
-5. Try a target that isn't in scope, such as `http://example.com`. It should be refused.
-
-If the scanner runs in Docker, `127.0.0.1` means the container itself. In that case use `http://host.docker.internal:8899` as the target and add `host.docker.internal` to the scope. On Linux, also start the fake app with `tests/fake_target.py 8899 0.0.0.0`.
-
-### c) Code review of a sample legacy project
-
-1. In **Code review**, upload `tests/fixtures/legacyapp.zip`.
-2. Expect about 42 findings: log4j 2.14.1 (Log4Shell), Struts 2.3, Django 1.11, Python 2.7 and Debian 9 base images, ViewState MAC disabled, a hardcoded password, and about 17 injection-style issues (SQL, command, XSS, file inclusion, SSRF, open redirect, XXE) in the sample PHP, Java, Node, Python and C# files.
-
-### d) Importing results from other tools
-
-1. Open **Import** and upload any file from `tests/fixtures/imports/`: `zap.json`, `zap.xml`, `burp.xml`, `semgrep.json`, `codeql.sarif` or `nuclei.jsonl`.
-2. Use **Add to** to merge it into the scan from step b, or leave it as a new entry.
-3. Each imported finding shows the tool, CWE, the tool's suggested fix, and containment advice that needs no code change.
-
-### e) AI connection without a real account (optional)
-
-This checks the gateway path against a fake gateway on your laptop.
-
-1. Start the fake gateway:
-
-   ```bash
-   .venv/bin/python tests/fake_gateway.py 8898
-   ```
-
-2. Start the scanner with `ANTHROPIC_AUTH_TOKEN=test` set.
-3. In **Settings → AI assist**, pick **Company LLM gateway**, enter `http://127.0.0.1:8898`, then click **Test connection**.
-4. You should see `Connected`.
-
-The fake gateway only replies "OK". Real advice needs a real connection (step 5).
+1. **Settings → Scope allowlist**: add the lab hosts you're authorized to scan, one per line. For example `qa-app.lab.corp`, `*.qa.corp` or `10.20.0.0/16`. Everything else is blocked, and an empty list blocks all scans.
+2. **Settings → Data feeds → Sync EOL data**: do this while you have internet. The tool also works offline with its built-in data.
 
 ---
 
-## 7. Running a real lab scan
+## 3. Connect your company's Claude (for the AI features)
 
-1. Connect to the VPN and make sure the lab host is in **Scope**.
-2. Go to **Web scan** and fill in:
-   - **Operator**: your name.
-   - **Ticket**: your approval or change number.
-   - Any auth headers or cookies the app needs. These are used for the scan only and never stored.
-3. Pick a mode:
-   - **Passive**: page loads only.
-   - **Safe** (default): adds about 40 GETs for well-known files.
-   - **Active**: adds version endpoints, admin consoles, TRACE and a legacy TLS check. It never sends exploit payloads.
+The scanner works fully without AI. Claude adds the **AI deep code review** and tailored containment plans.
 
-   Start with Safe on fragile apps.
-4. Review the findings. Each one has containment steps (WAF/proxy snippets, isolation), extended-support options and, for serious ones, manual lab verification steps.
-5. Export the results as HTML, Markdown, CSV or JSON from the scan page for your ticket or report.
+### Which option you have
+
+**A Claude Enterprise seat on its own is a claude.ai chat login.** Tools can't use a chat login directly. Most companies give you one of these three routes; ask your Claude admin or IT which:
+
+| You have | Use the connection | Key needed? |
+|---|---|---|
+| **Claude Code** on your company Claude account | **Claude Code (your Claude / Enterprise login)** | **No.** It uses your login. |
+| An **API key** from your company's Claude Console organization | **Anthropic API (direct)** | Yes, as an environment variable |
+| An internal **AI gateway** URL and token, or Claude through **AWS Bedrock / Google Vertex / Azure Foundry** | The matching connection | An environment variable or your cloud login |
+
+**Mythos:**
+- If your organization has access to `claude-mythos-5-2`, select it as the **Model**.
+- If you don't have it, Claude Code or the API tells you so. Leave the model at the default, or use `claude-fable-5-2` (same model, open to everyone).
+- With the Claude Code connection, Mythos is used only if your org enabled it for Claude Code. Run `claude`, then `/model`, to see what's available to you.
+
+### Option 1: Claude Code with your work login (recommended, no API key)
+
+1. **Install Claude Code** on the same laptop as the scanner. You can also use your company's software center if it's listed there.
+   - Windows (PowerShell): `irm https://claude.ai/install.ps1 | iex`
+   - macOS / Linux: `curl -fsSL https://claude.ai/install.sh | bash`
+   - Or, with Node.js installed: `npm install -g @anthropic-ai/claude-code`
+2. **Sign in once.** Open a new terminal, run `claude`, and log in with your **work** Claude account (your company's SSO). Type `/model` to see which models you can use, including Mythos if enabled. Then exit with `/exit`.
+3. In the scanner, go to **Settings → AI assist**:
+   - **Provider:** Claude
+   - **Connection:** Claude Code (your Claude / Enterprise login)
+   - **Model:** leave the default, or pick `claude-mythos-5-2` if you have it
+   - Tick **"I'm allowed to send source code to this Claude connection"** (needed for the code review)
+   - Click **Save**, then **Test connection**. You should see `Connected`.
+   - If it says Claude Code wasn't found, paste its full path into **Claude Code path**. Find it with `where claude` (Windows) or `which claude` (Mac/Linux).
+
+This connection needs the scanner running directly on your laptop (the Python install), not in Docker.
+
+How the scanner runs Claude Code:
+- **Read-only:** only Read, Grep and Glob are allowed. Bash, file editing, web access and sub-agents are blocked.
+- **Only the uploaded code:** it runs inside that scan's extracted source folder.
+- **Your login, not an API key:** any `ANTHROPIC_API_KEY` in the environment is ignored, so your work login is used.
+
+### Option 2: API key, gateway or cloud
+
+The scanner never asks for or stores keys. Set the key as an environment variable **before starting the scanner**, in the same window.
+
+- **API key.** Windows (PowerShell):
+
+  ```powershell
+  $env:ANTHROPIC_API_KEY = "sk-ant-..."
+  powershell -ExecutionPolicy Bypass -File scripts\start-windows.ps1
+  ```
+
+  Mac/Linux:
+
+  ```bash
+  export ANTHROPIC_API_KEY=sk-ant-...
+  EOLSCAN_DATA=./data .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8080
+  ```
+
+- **Company gateway.** Set `ANTHROPIC_AUTH_TOKEN`, or `ANTHROPIC_API_KEY` if your gateway expects an `x-api-key` header. Then enter the gateway URL in Settings.
+- **Bedrock:** sign in with `aws sso login --profile <name>`, then fill in the region and profile in Settings.
+- **Vertex:** run `gcloud auth application-default login`, then fill in the project and region in Settings.
+- **Foundry:** set `ANTHROPIC_FOUNDRY_API_KEY` and fill in the resource name in Settings.
+
+Then go to **Settings → AI assist**, pick the connection, **Save**, and **Test connection**. The page shows whether the needed variable is set (never its value).
 
 ---
 
-## 8. Optional: headless-browser crawl for single-page apps
+## 4. Use the three features
 
-Modern apps (React, Angular, Vue) build their pages in the browser, so a plain crawl only sees an empty shell. The browser crawl renders each page in headless Chromium. It reads library versions from the live page, records the API calls the page makes, and follows links that only exist after rendering.
+### Feature 1: Code review of an uploaded ZIP
 
-Python:
+1. Open **Code review** and upload a `.zip` or `.tar.gz` of the application. The code is extracted and read, never run.
+2. Tick the options you want, then **Upload & review**:
+   - **Run the AI deep review after the scan** (needs Claude, section 3).
+   - **Also run Semgrep** (if installed).
+3. The automatic scan finishes in seconds to minutes. It finds:
+   - **Outdated components:** every dependency and runtime (npm, Maven/Gradle, PyPI, NuGet, Composer, RubyGems, Go, Dockerfile base images, bundled JARs), with end-of-life dates and known CVEs.
+   - **Risky code:** about 54 rules (SQL and command injection, XSS, file inclusion and path traversal, SSRF, XXE, open redirects, unsafe deserialization, hardcoded secrets, weak crypto, debug settings). Each is mapped to the **URL and parameter** that reaches it where possible.
+4. The **AI deep review** (tab "AI deep review ✦", or the button at the top of the scan) runs in the background. Large codebases can take 10–40 minutes; watch progress in the **Log** tab. Claude:
+   - finds the entry points and traces user input through the code;
+   - gives each pattern match a verdict: *confirmed*, *likely false positive* or *needs runtime check*;
+   - looks for what patterns miss: access control, authentication, logic flaws, deserialization, file handling.
 
-```bash
-.venv/bin/pip install -r requirements-browser.txt
-.venv/bin/playwright install chromium
-```
+   Each confirmed vulnerability appears in **Findings** with the Claude badge.
+5. Every code finding shows:
+   - **Reached via**: the HTTP method, path and parameter.
+   - **Confirm in the code**: a checklist to tell real issues from false alarms.
+   - **How to verify safely**: non-destructive checks for the authorized lab.
+   - **Containment (no code change needed)**: WAF/proxy rules with copyable nginx/Apache/IIS snippets, isolation, least privilege, monitoring.
+6. Export with **HTML / Markdown / CSV / JSON** at the top of the scan.
 
-Windows: `.venv\Scripts\pip install -r requirements-browser.txt`, then `.venv\Scripts\playwright install chromium`.
+The extracted source is kept so the AI review can read it. **Delete kept source** (on the AI tab) or deleting the scan removes it.
 
-Docker: in `docker-compose.yml` set `WITH_BROWSER: "1"`, then run `docker compose up -d --build`.
+### Feature 2: Web crawl of your allowlisted hosts
 
-If your company blocks the Chromium download, ask IT. Playwright can also use a browser path or download mirror they provide (`PLAYWRIGHT_DOWNLOAD_HOST`).
+1. Open **Web scan** and enter one target, or several (one per line). **Use all allowlisted hosts** fills in every exact host from your scope.
+2. Pick a depth:
+   - **Passive:** page loads only.
+   - **Safe:** adds about 40 checks for well-known files.
+   - **Active:** adds version endpoints, admin consoles, HTTP methods and legacy TLS.
 
-Then tick **Render pages in a headless browser** under **Advanced** on the web scan form. The browser follows the same scope allowlist: requests to hosts that aren't allowed are aborted, never sent. The log lists which hosts were blocked.
+   None of them sends exploit payloads.
+3. Optional, under **Advanced**: auth headers or cookies (never stored), and **Render pages in a headless browser** for single-page apps.
+4. Each target gets its own scan. For several targets, the Dashboard shows **Multi-target scans** with a **Combined HTML / CSV / Markdown** report. It includes a table of which end-of-life components run on which hosts.
+5. Every finding comes with containment for code that won't change: isolation, WAF virtual patches, proxy snippets, header and cookie fixes at the proxy, monitoring, extended-support options, and manual lab checks for the serious ones.
 
-## 9. Pairing with ZAP, Burp, Semgrep or CodeQL
+### Feature 3: Versions in use, plus Burp and other tools
 
-This tool doesn't fuzz parameters or trace data through code. For a fuller assessment:
+- **Inventory tab** (on any scan): every component and version found, its lifecycle status (end-of-life, ending soon, supported) and known CVE count.
+- **Import → Burp proxy history:** in Burp go to **Proxy → HTTP history**, select the items, then right-click → **Save items** (keep "Base64-encode" on). Upload the XML.
+  - It's analysed **passively**: versions, end-of-life components, exposed files, security headers, cookie flags, CORS and login forms over HTTP.
+  - **No traffic is sent.** This also works for apps that need login, because you already browsed them.
+- **Import → HAR file:** in browser DevTools → Network, choose **Save all as HAR**. Analysed the same way.
+- **Import → scanner reports:** Burp issues XML, OWASP ZAP (JSON or XML), Semgrep JSON, SARIF (CodeQL, Snyk, Checkmarx, SonarQube…), Nuclei JSONL. Each finding gets containment advice, and you can merge it into an existing scan for one report.
 
-1. Run your usual dynamic scanner (ZAP or Burp) against the lab app, and/or a code analyzer (Semgrep or CodeQL) on the source.
-2. Export the results:
-   - ZAP: Traditional JSON or XML.
-   - Burp: Report selected issues → XML.
-   - Semgrep: `--json`.
-   - CodeQL, Snyk, Checkmarx, SonarQube and others: SARIF.
-   - Nuclei: `-jsonl`.
-3. Use **Import** and merge them into this tool's scan of the same app. You get one report with containment steps for every finding.
+---
+
+## 5. Check that everything works
+
+These checks use only your laptop: no VPN, no lab, no Claude needed.
+
+1. **Self-tests:**
+   - Windows: `.venv\Scripts\python tests\test_core.py`
+   - Mac/Linux: `.venv/bin/python tests/test_core.py`
+
+   You should see 21 lines starting with `ok`. A `skip` line is fine for an optional extra you didn't install.
+2. **Fake legacy web app.** In a second terminal, run `.venv/bin/python tests/fake_target.py 8899` (Windows: `.venv\Scripts\python tests\fake_target.py 8899`). Then:
+   - add `127.0.0.1` to the scope;
+   - start a **Web scan** of `http://127.0.0.1:8899` in **Active** mode.
+
+   Expect about 24 findings: Apache 2.2, PHP 5.6, AngularJS 1.5, jQuery 1.12, an exposed `.git` folder, CORS trusting any site, missing headers, a login form over HTTP, and more.
+3. **Code review:** upload `tests/fixtures/legacyapp.zip`. Expect about 42 findings, including log4j 2.14.1, Struts 2.3 and Django 1.11, plus SQL injection, command injection and XSS in the sample PHP, Java, Node, Python and C# files, each with its URL and parameter.
+4. **Burp / HAR:** in **Import**, upload `tests/fixtures/imports/burp-items.xml` or `traffic.har`. Expect Apache 2.2, PHP 5.6, jQuery 1.12 and six header/cookie/CORS findings.
+5. **Claude:** in **Settings → AI assist**, click **Test connection**. Then open the code scan from step 3 and run **AI deep review**.
+
+---
 
 ## Updating
 
 ```bash
 git pull
-docker compose up -d --build        # Docker
-# Python: re-run pip install, then restart uvicorn
 ```
 
-Your settings and scan history are kept.
+Then:
+- **Windows:** re-run `install-windows.cmd`.
+- **Mac/Linux:** re-run the `pip install` line.
 
----
+Restart the scanner. Your settings and scans are kept in `data/`.
 
 ## Troubleshooting
 
-| Symptom | Fix |
+| Problem | Fix |
 |---|---|
-| Scan says "out of scope" | Add the exact host, a wildcard like `*.qa.corp`, a CIDR range, or `host:port` in Settings → Scope. |
-| Lab site unreachable in Docker | Docker may not see the VPN routes. Try the Python option, or Docker's host networking on Linux. |
-| TLS or certificate errors to feeds or Claude | Put the corporate CA in a file and set `SSL_CERT_FILE=/path/corp-ca.pem`. For Docker, uncomment the CA volume and `SSL_CERT_FILE` in `docker-compose.yml`. |
-| Corporate proxy blocks feeds or Claude | Set `HTTPS_PROXY` (and `NO_PROXY=127.0.0.1,localhost,.lab.corp`). |
-| Test connection: "credentials missing/invalid" | The key or token isn't in the scanner's environment. Docker: check `.env` and the uncommented line. Python: set it in the same terminal, then restart. |
-| Test connection: 403 | Your org doesn't have that model, or Mythos isn't enabled. Try `claude-fable-5-2` or `claude-opus-5-5`. |
-| Test connection: 404 / model not found | Wrong model ID or region for Bedrock/Vertex. Ask IT which IDs are enabled. |
-| Test connection: cannot reach endpoint | Proxy, VPN or firewall. Gateways are often reachable only on the VPN. |
-| UI looks out of date after an update | Hard refresh (Ctrl/Cmd+Shift+R). |
-| Port 8080 already in use | Python: use `--port 8090`. Docker: change `127.0.0.1:8080:8080` to `127.0.0.1:8090:8080`. |
-| Browser option greyed out | Playwright isn't installed in the environment running the scanner. See section 8. |
-| Browser crawl log says Chromium is not installed | Run `playwright install chromium` (Python), or rebuild Docker with `WITH_BROWSER: "1"`. |
-| Import says "unrecognised format" | Export again in one of the listed formats. For ZAP use the *Traditional JSON/XML* report, not HTML. |
-| Sharing with your team on a VM | Bind to `0.0.0.0` and set `EOLSCAN_USER` / `EOLSCAN_PASSWORD`. See the README. |
+| Scan says "out of scope" | Add the host to **Settings → Scope allowlist**. Use exact host, `*.domain`, CIDR or `host:port`. |
+| Test connection: "Claude Code not found" | Install Claude Code (section 3), open a **new** terminal, run `claude` once, or paste its path in Settings. |
+| Claude Code connection doesn't work in Docker | Expected: the container can't see your `claude` install or login. Run the scanner with Python (section 1) to use Claude Code. |
+| Test connection: Claude Code not signed in | Run `claude` in a terminal and log in with your work account. |
+| Test connection: "No API key found" | The key wasn't set in the same window that started the scanner. Set it, then restart the scanner. |
+| 403 / model not available | Your org doesn't have that model, for example Mythos. Choose the default or `claude-fable-5-2`. |
+| AI review says "the model declined" | Rare with security code. Re-run, or use the rule-based results and the "Confirm in the code" checklist. |
+| AI review is slow | Large codebases take time. Lower **max steps** or **effort** in Settings, or review one module at a time (zip a sub-folder). |
+| Lab site unreachable | Connect to the VPN. If lab sites need the corporate proxy, tick **Route through HTTP(S)_PROXY** in the scan's Advanced section. |
+| TLS errors | Leave **Verify TLS** off for internal certificates, or set `SSL_CERT_FILE` to your company's CA. |
+| Import says "unrecognised format" | Use one of the listed exports. For Burp history, use **Save items** (XML), not "Report issues". |
+| Port 8080 in use | Start with `--port 8090` (Windows: `start-windows.ps1 -Port 8090`). |

@@ -4,13 +4,14 @@ Providers:
   anthropic - Claude through the official SDK, on any of the connections in PLATFORMS (data leaves the box)
   ollama    - a local model through Ollama's native /api/chat (data stays on your network)
 
-Secrets (API keys, tokens, cloud credentials) are never stored in settings: each connection reads them from
-the environment or the cloud SDK's normal credential chain (AWS profile/role, gcloud ADC, ...). Settings only
-hold non-secret routing values such as region, project, workspace ID and base URL.
+Credentials are never stored by this app: each connection reads them from environment variables or the cloud SDK's
+normal credential chain (AWS profile/SSO, gcloud ADC, ...). The "claude_code" connection uses the local Claude Code
+CLI and whatever account it is logged in to (e.g. a Claude Enterprise login), so no API key is needed at all.
 """
 from __future__ import annotations
 
 import json
+import os
 import time
 from typing import Optional
 
@@ -29,6 +30,9 @@ SYSTEM = (
 
 # How each connection authenticates. Shown in the UI so users know which env var / login to set up.
 PLATFORMS = {
+    "claude_code": {"label": "Claude Code (your Claude / Enterprise login, no API key)", "extra": None,
+                    "auth": "Install Claude Code on this machine and sign in once with your work account (run `claude`, then /login). "
+                            "The scanner runs it read-only; Mythos is used if your org has enabled it and you pick it as the model."},
     "anthropic": {"label": "Anthropic API (direct)", "extra": None,
                   "auth": "ANTHROPIC_API_KEY env var (an org/workspace key works), or `ant auth login`"},
     "gateway": {"label": "Company LLM gateway / proxy (Anthropic-compatible)", "extra": None,
@@ -61,7 +65,15 @@ _FALLBACK_OK = {"anthropic", "gateway", "aws", "google_cloud"}
 
 SECRET_HINTS = ("key", "token", "secret", "password", "credential")
 
-
+# Environment variables each connection reads its key/token from (used in error messages).
+KEY_PLATFORMS = {
+    "anthropic": {"label": "Anthropic API key", "env": ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"], "placeholder": "sk-ant-..."},
+    "gateway": {"label": "Gateway API key / token", "env": ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"], "placeholder": "token from your gateway"},
+    "foundry": {"label": "Foundry API key", "env": ["ANTHROPIC_FOUNDRY_API_KEY"], "placeholder": "Azure Foundry key"},
+    "bedrock": {"label": "Bedrock API key (optional)", "env": ["AWS_BEARER_TOKEN_BEDROCK"], "placeholder": "leave empty to use your AWS login"},
+    "bedrock_invoke": {"label": "Bedrock API key (optional)", "env": ["AWS_BEARER_TOKEN_BEDROCK"], "placeholder": "leave empty to use your AWS login"},
+    "aws": {"label": "Claude Platform on AWS API key (optional)", "env": [], "placeholder": "leave empty to use your AWS login"},
+}
 class LLMUnavailable(Exception):
     pass
 
@@ -90,7 +102,7 @@ def _client(cfg: dict):
             url = _opt(cfg, "base_url")
             if not url:
                 raise LLMUnavailable("set the gateway URL in Settings -> AI assist")
-            return anthropic.Anthropic(base_url=url, **kw)
+            return anthropic.Anthropic(base_url=url, **kw)  # ANTHROPIC_API_KEY -> x-api-key, ANTHROPIC_AUTH_TOKEN -> Bearer
         if plat in ("bedrock", "bedrock_invoke", "aws"):
             aws = {"aws_region": _opt(cfg, "aws_region"), "aws_profile": _opt(cfg, "aws_profile")}
             aws = {k: v for k, v in aws.items() if v}
@@ -128,6 +140,15 @@ def model_for(cfg: dict) -> str:
     return model
 
 
+def _missing_credentials(plat: str) -> str:
+    info = KEY_PLATFORMS.get(plat)
+    label = PLATFORMS.get(plat, {}).get("label", plat)
+    if info and info["env"]:
+        return (f"No API key found for {label}. Set {' or '.join(info['env'])} in the environment of the machine running "
+                "the scanner, then restart it. Or use the 'Claude Code (your Claude login)' connection, which needs no key.")
+    return f"No credentials found for {label}. {PLATFORMS.get(plat, {}).get('auth', '')}"
+
+
 def _anthropic(prompt: str, cfg: dict, max_tokens: int = 16000) -> str:
     import anthropic
 
@@ -151,8 +172,8 @@ def _anthropic(prompt: str, cfg: dict, max_tokens: int = 16000) -> str:
         if resp is None:
             resp = client.messages.create(**kwargs)
     except anthropic.AuthenticationError as e:
-        raise LLMUnavailable(f"credentials missing/invalid for {PLATFORMS.get(plat, {}).get('label', plat)}: "
-                             f"{PLATFORMS.get(plat, {}).get('auth', '')}") from e
+        raise LLMUnavailable(f"The key or login was rejected by {PLATFORMS.get(plat, {}).get('label', plat)} (401). "
+                             "Check it was copied completely, hasn't been revoked, and belongs to this connection.") from e
     except anthropic.PermissionDeniedError as e:
         raise LLMUnavailable(f"access denied (403): your org/account may not have access to model "
                              f"'{kwargs['model']}' on this connection. {e.message}") from e
@@ -166,6 +187,10 @@ def _anthropic(prompt: str, cfg: dict, max_tokens: int = 16000) -> str:
         raise LLMUnavailable(f"{plat}: {e}") from e
     except LLMUnavailable:
         raise
+    except TypeError as e:
+        if "authentication method" in str(e) or "api_key" in str(e):
+            raise LLMUnavailable(_missing_credentials(plat)) from e
+        raise LLMUnavailable(f"{PLATFORMS.get(plat, {}).get('label', plat)} is not ready: {e}") from e
     except Exception as e:  # noqa: BLE001 - cloud credential chains (botocore, google-auth, azure) raise their own types
         raise LLMUnavailable(f"{PLATFORMS.get(plat, {}).get('label', plat)} is not ready: {type(e).__name__}: {e}") from e
     if resp.stop_reason == "refusal":
@@ -187,6 +212,9 @@ def _ollama(prompt: str, url: str, model: str) -> str:
 def complete(prompt: str, cfg: Optional[dict] = None, max_tokens: int = 16000) -> str:
     cfg = cfg or db.get_setting("llm")
     p = cfg.get("provider", "none")
+    if p == "anthropic" and cfg.get("platform") == "claude_code":
+        from . import claude_code
+        return claude_code.complete(SYSTEM + "\n\n" + prompt, cfg)
     if p == "anthropic":
         return _anthropic(prompt, cfg, max_tokens)
     if p == "ollama":
@@ -214,7 +242,18 @@ def status() -> dict:
 
 def options() -> dict:
     return {"platforms": {k: {"label": v["label"], "auth": v["auth"]} for k, v in PLATFORMS.items()},
-            "models": MODEL_PRESETS}
+            "models": MODEL_PRESETS, "env": {k: _env_status(k) for k in PLATFORMS}}
+
+
+def _env_status(platform: str) -> dict:
+    """Which credential env var (name only, never the value) this connection would use, if any is set."""
+    info = KEY_PLATFORMS.get(platform)
+    if platform == "claude_code":
+        from . import claude_code
+        return {"names": [], "set": claude_code.find_cli(db.get_setting("llm")) is not None, "kind": "cli"}
+    if not info:
+        return {"names": [], "set": None, "kind": "cloud"}
+    return {"names": info["env"], "set": next((e for e in info["env"] if os.environ.get(e)), None), "kind": "env"}
 
 
 def _finding_brief(f: dict) -> dict:
@@ -239,30 +278,3 @@ def advise_finding(f: dict, context: Optional[str] = None) -> str:
         + (f"\nEnvironment notes from the operator: {context}\n" if context else "")
     )
     return complete(prompt)
-
-
-def review_code(findings: list[dict], snippets: list[dict], inventory: list[dict]) -> str:
-    cfg = db.get_setting("llm")
-    send_code = bool(cfg.get("send_code")) or cfg.get("provider") == "ollama"
-    eol = [i for i in inventory if i["status"] in ("eol", "eol_soon")][:60]
-    vuln = [i for i in inventory if i["vulns"]][:60]
-    parts = [
-        "Review this legacy codebase from an authorized code review. The code will not be modified, so focus on "
-        "which end-of-life components and risky patterns are actually reachable, how an attacker would chain them, "
-        "and how to contain them at the infrastructure layer. Also call out anything the rule-based scan likely missed "
-        "in the snippets. Finish with a prioritized containment checklist.",
-        f"\nEOL / near-EOL components:\n```json\n{json.dumps(eol, indent=1)}\n```",
-        f"\nComponents with known vulnerabilities:\n```json\n{json.dumps(vuln, indent=1)}\n```",
-        f"\nRule-based findings:\n```json\n{json.dumps([_finding_brief(f) for f in findings[:80]], indent=1)}\n```",
-    ]
-    if send_code:
-        budget = 120_000
-        for s in snippets:
-            block = f"\n--- {s['path']}" + (f":{s.get('line')}" if s.get("line") else "") + f" ({s['kind']})\n{s['text']}\n"
-            if budget - len(block) < 0:
-                break
-            budget -= len(block)
-            parts.append(block)
-    else:
-        parts.append("\n(Source snippets withheld by policy: 'send code to LLM' is off. Base the review on the metadata above.)")
-    return complete("\n".join(parts))

@@ -86,6 +86,10 @@ async function dashboard() {
     <div class="stat med"><div class="v">${tot.eol}</div><div class="l">EOL components</div></div>
     <div class="stat"><div class="v">${esc(feeds.active?.products ?? "-")}</div><div class="l">Products in EOL DB</div></div>
   </div>
+  ${(() => { const b = {}; scans.forEach((s) => { const id = s.options?.batch; if (id) (b[id] = b[id] || []).push(s); });
+    const ids = Object.keys(b); return ids.length ? `<div class="panel"><h2>Multi-target scans</h2>${ids.slice(0, 8).map((id) => `<div class="row" style="justify-content:space-between;margin:6px 0">
+      <span><b>${b[id].length} targets</b> <span class="muted small">${esc(b[id].map((s) => s.target).slice(0, 4).join(", "))}${b[id].length > 4 ? "…" : ""} · ${b[id].filter((s) => s.status === "done").length} done</span></span>
+      <span class="row"><a class="btn ghost" href="/api/batches/${esc(id)}/report.html">Combined HTML</a><a class="btn ghost" href="/api/batches/${esc(id)}/report.csv">CSV</a><a class="btn ghost" href="/api/batches/${esc(id)}/report.md">Markdown</a></span></div>`).join("")}</div>` : ""; })()}
   <div class="panel"><h2>Recent scans</h2>
   ${scans.length ? `<div class="table-wrap"><table><thead><tr><th>Target</th><th>Type</th><th>Status</th><th>Critical / High</th><th class="hide-sm">EOL</th><th class="hide-sm">Operator</th><th>When</th></tr></thead><tbody>
     ${scans.map((s) => { const c = s.summary?.severity_counts || {}; return `<tr class="click" data-id="${esc(s.id)}">
@@ -98,7 +102,7 @@ async function dashboard() {
   if (scans.some((s) => ["running", "queued"].includes(s.status))) pollTimer = setInterval(() => location.hash.match(/^#?\/?$/) && dashboard(), 3000);
 }
 
-const kindLabel = (s) => (s.kind === "web" ? "Web · " + esc(s.mode) : s.kind === "import" ? "Import · " + esc(s.mode) : "Code review");
+const kindLabel = (s) => (s.kind === "web" ? "Web · " + esc(s.mode) + (s.options?.batch ? " · batch" : "") : s.kind === "import" ? "Import · " + esc(s.mode) : s.kind === "passive" ? "Traffic · " + esc(s.mode) : "Code review" + (s.summary?.ai_review_status?.state === "done" ? " + AI" : ""));
 
 // ---------------------------------------------------------------- new web scan
 async function newWeb() {
@@ -109,8 +113,9 @@ async function newWeb() {
   <div class="page-head"><div><h1>New web scan</h1><div class="muted">Fingerprints the app, maps every component to its lifecycle and known vulnerabilities.</div></div></div>
   <form class="panel" id="f">
     <label>Target URL</label>
-    <input type="text" name="target" placeholder="https://app.qa.lab.corp" required value="${esc(last.target || "")}">
-    <div class="hint" id="scopeHint">Must match the scope allowlist.</div>
+    <textarea name="target" rows="2" placeholder="https://app.qa.lab.corp&#10;(one target per line to scan several at once)" required>${esc(last.target || "")}</textarea>
+    <div class="row" style="justify-content:space-between"><div class="hint" id="scopeHint">Must match the scope allowlist. Several lines = one scan per target plus a combined report.</div>
+      <button type="button" class="ghost" id="useAllow">Use all allowlisted hosts</button></div>
     <label>Scan depth</label>
     <div class="modes">
       <label class="mode"><input type="radio" name="mode" value="passive"><b>Passive</b><p>Normal page loads only. Headers, HTML, JavaScript libraries.</p></label>
@@ -142,24 +147,36 @@ async function newWeb() {
   const f = $("#f");
   const hint = $("#scopeHint");
   let t;
+  const targetsOf = () => f.target.value.split("\n").map((x) => x.trim()).filter(Boolean);
   f.target.oninput = () => { clearTimeout(t); t = setTimeout(async () => {
-    const v = f.target.value.trim(); if (!v) return;
-    const r = await api(`/api/scope/check?url=${encodeURIComponent(v)}`);
-    hint.innerHTML = r.in_scope ? `<span style="color:var(--ok)">✓ In scope</span>` : `<span style="color:var(--crit)">✗ ${esc(r.reason)}</span> — <a href="#/settings">edit scope</a>`;
+    const list = targetsOf(); if (!list.length) return;
+    const res = await Promise.all(list.slice(0, 50).map((v) => api(`/api/scope/check?url=${encodeURIComponent(v)}`).then((r) => [v, r])));
+    const bad = res.filter(([, r]) => !r.in_scope);
+    hint.innerHTML = !bad.length ? `<span style="color:var(--ok)">✓ ${list.length > 1 ? `All ${list.length} targets` : "Target"} in scope</span>`
+      : `<span style="color:var(--crit)">✗ ${bad.length} not in scope: ${bad.slice(0, 3).map(([v, r]) => esc(v) + " (" + esc(r.reason) + ")").join("; ")}</span> — <a href="#/settings">edit scope</a>`;
   }, 300); };
+  $("#useAllow").onclick = async () => { const hosts = await api("/api/scope/hosts");
+    if (!hosts.length) return toast("The allowlist has no exact hosts (wildcards and IP ranges can't be crawled). Add hosts in Settings.", 6000);
+    f.target.value = hosts.map((h) => (h.includes("://") ? h : "https://" + h)).join("\n"); f.target.oninput(); };
   if (f.target.value) f.target.oninput();
   f.onsubmit = async (e) => {
     e.preventDefault();
     const fd = new FormData(f);
     const headers = {};
     (fd.get("headers") || "").split("\n").forEach((l) => { const i = l.indexOf(":"); if (i > 0) headers[l.slice(0, i).trim()] = l.slice(i + 1).trim(); });
-    const body = { target: fd.get("target").trim(), mode: fd.get("mode"), operator: fd.get("operator"), ticket: fd.get("ticket"),
+    const targets = targetsOf();
+    const body = { target: targets[0] || "", mode: fd.get("mode"), operator: fd.get("operator"), ticket: fd.get("ticket"),
       attest: !!fd.get("attest"), headers, cookies: fd.get("cookies") || "", rate_per_sec: +fd.get("rate_per_sec"),
       concurrency: +fd.get("concurrency"), max_pages: +fd.get("max_pages"), timeout: +fd.get("timeout"),
       verify_tls: !!fd.get("verify_tls"), use_proxy: !!fd.get("use_proxy"), render_js: !!fd.get("render_js") };
     store.set("lastScan", { target: body.target, operator: body.operator, ticket: body.ticket });
     f.querySelector("button").disabled = true;
-    try { const r = await api("/api/scans/web", { method: "POST", body }); location.hash = `#/scan/${r.id}`; }
+    try {
+      if (targets.length > 1) {
+        const r = await api("/api/batches/web", { method: "POST", body: { ...body, targets } });
+        toast(`Started ${r.started.length} scans${r.skipped.length ? `, skipped ${r.skipped.length} out of scope` : ""}`, 6000);
+        location.hash = "#/";
+      } else { const r = await api("/api/scans/web", { method: "POST", body }); location.hash = `#/scan/${r.id}`; } }
     catch (err) { $("#err").innerHTML = `<span style="color:var(--crit)">${esc(err.message)}</span>`; f.querySelector("button").disabled = false; }
   };
 }
@@ -167,6 +184,9 @@ async function newWeb() {
 // ---------------------------------------------------------------- new code review
 async function newCode() {
   const last = store.get("lastScan", {});
+  const caps = await api("/api/capabilities").catch(() => ({}));
+  const cfg = await api("/api/settings");
+  const aiReady = cfg.llm.provider === "anthropic" && cfg.llm.send_code;
   app.innerHTML = `
   <div class="page-head"><div><h1>Code review</h1><div class="muted">Upload a .zip / .tar.gz of the application. It is extracted in a sandboxed folder, parsed, and never executed.</div></div></div>
   <form class="panel" id="f">
@@ -178,8 +198,10 @@ async function newCode() {
       <div><label>Ticket / authorization ref <span class="muted">(optional)</span></label><input type="text" name="ticket" value="${esc(last.ticket || "")}"></div>
     </div>
     <label class="check"><input type="checkbox" name="include_node_modules"> Include node_modules (slower; usually the lockfile is enough)</label>
+    <label class="check"><input type="checkbox" name="ai_review" ${aiReady ? "checked" : "disabled"}> Run the <b>AI deep review</b> after the scan <span class="muted">(${aiReady ? "sends the source code to " + (cfg.llm.platform === "claude_code" ? "your Claude Code login" : "your Claude API connection") : "set up Claude and allow sending code in Settings → AI assist"})</span></label>
+    <label class="check"><input type="checkbox" name="semgrep" ${caps.semgrep ? "checked" : "disabled"}> Also run <b>Semgrep</b> data-flow rules <span class="muted">(${caps.semgrep ? "installed" : "not installed: pip install semgrep"})</span></label>
     <label class="check"><input type="checkbox" name="attest" required> I am authorized to review this source code.</label>
-    <div class="hint">What is checked: dependency manifests &amp; lockfiles (npm, PyPI, Maven/Gradle, Composer, RubyGems, Go, NuGet), runtime pins (.nvmrc, runtime.txt, TargetFramework, Dockerfile FROM), vendored JS libraries, bundled JARs, risky legacy patterns, and injection-prone code (SQL, command, XSS, file path, SSRF, XXE, redirects). Pattern matches show where to look; confirm each one. For full data-flow analysis, run Semgrep or CodeQL and <a href="#/import">import the results</a>.</div>
+    <div class="hint">What is checked: dependency manifests &amp; lockfiles (npm, PyPI, Maven/Gradle, Composer, RubyGems, Go, NuGet), runtime pins (.nvmrc, runtime.txt, TargetFramework, Dockerfile FROM), vendored JS libraries, bundled JARs, risky legacy patterns, and injection-prone code (SQL, command, XSS, file path, SSRF, XXE, redirects), each mapped to the URL and parameter that reaches it. Pattern matches show where to look; confirm each one. For full data-flow analysis, run Semgrep or CodeQL and <a href="#/import">import the results</a>.</div>
     <div class="row" style="margin-top:12px"><button type="submit">Upload &amp; review</button><span class="muted small" id="err"></span></div>
   </form>`;
   const f = $("#f"), drop = $("#drop"), input = f.file;
@@ -194,6 +216,7 @@ async function newCode() {
     const fd = new FormData();
     fd.append("file", input.files[0]); fd.append("operator", f.operator.value); fd.append("ticket", f.ticket.value);
     fd.append("attest", f.attest.checked); fd.append("include_node_modules", f.include_node_modules.checked);
+    fd.append("ai_review", f.ai_review.checked); fd.append("semgrep", f.semgrep.checked);
     store.set("lastScan", { ...last, operator: f.operator.value, ticket: f.ticket.value });
     f.querySelector("button").disabled = true; $("#err").textContent = "Uploading…";
     try { const r = await api("/api/scans/code", { method: "POST", body: fd }); location.hash = `#/scan/${r.id}`; }
@@ -217,6 +240,8 @@ async function importPage() {
       <dt>Semgrep</dt><dd><code>semgrep --config auto --json -o semgrep.json</code></dd>
       <dt>SARIF</dt><dd>CodeQL, Snyk Code, Checkmarx, SonarQube, Bandit, ESLint… (<code>--sarif</code> / <code>--format sarif-latest</code>)</dd>
       <dt>Nuclei</dt><dd><code>nuclei -u &lt;target&gt; -jsonl -o nuclei.jsonl</code></dd>
+      <dt>Burp proxy history</dt><dd>Proxy → HTTP history → select items → right-click → <b>Save items</b> (XML, base64 on). Analysed passively for versions, end-of-life components and header/cookie issues; no traffic is sent.</dd>
+      <dt>HAR file</dt><dd>Browser DevTools → Network → <b>Save all as HAR</b> (or ZAP/Fiddler export). Analysed passively the same way.</dd>
     </dl>
     <label>Add to</label>
     <select name="into_scan"><option value="">A new entry on the dashboard</option>${scans.map((x) => `<option value="${esc(x.id)}">Existing scan: ${esc(x.target)} (${kindLabel(x)} · ${esc(x.id)})</option>`).join("")}</select>
@@ -241,7 +266,8 @@ async function importPage() {
     fd.append("attest", f.attest.checked); fd.append("into_scan", f.into_scan.value);
     store.set("lastScan", { ...last, operator: f.operator.value, ticket: f.ticket.value });
     f.querySelector("button").disabled = true; $("#err").textContent = "Importing…";
-    try { const r = await api("/api/scans/import", { method: "POST", body: fd }); toast(`Imported ${r.imported} findings from ${r.tool}`); location.hash = `#/scan/${r.id}`; }
+    try { const r = await api("/api/scans/import", { method: "POST", body: fd });
+      toast(r.passive ? `Analysing ${r.tool} (no traffic is sent)…` : `Imported ${r.imported} findings from ${r.tool}`); location.hash = `#/scan/${r.id}`; }
     catch (err) { $("#err").innerHTML = `<span style="color:var(--crit)">${esc(err.message)}</span>`; f.querySelector("button").disabled = false; }
   };
 }
@@ -273,7 +299,7 @@ function renderScan(scan, findings) {
   const running = ["running", "queued"].includes(scan.status);
   app.innerHTML = `
   <div class="page-head"><div>
-      <div class="muted small"><a href="#/">Dashboard</a> / ${scan.kind === "web" ? "Web scan" : scan.kind === "import" ? "Imported results" : "Code review"} · ${esc(scan.id)}</div>
+      <div class="muted small"><a href="#/">Dashboard</a> / ${scan.kind === "web" ? "Web scan" : scan.kind === "import" ? "Imported results" : scan.kind === "passive" ? "Recorded traffic (passive)" : "Code review"} · ${esc(scan.id)}</div>
       <h1 style="word-break:break-all">${esc(scan.target)}</h1>
       <div class="muted small">${statusBadge(scan.status)} ${scan.kind === "web" ? "mode <b>" + esc(scan.mode) + "</b> · " : ""}operator ${esc(scan.operator)}${scan.ticket ? " · " + esc(scan.ticket) : ""} · started ${ago(scan.created)}${s.requests ? ` · ${s.requests} requests` : ""}${s.files_scanned ? ` · ${s.files_scanned} files` : ""}${(s.imports || []).length ? ` · imported: ${s.imports.map((i) => `${esc(i.tool)} (${i.count})`).join(", ")}` : ""}</div>
     </div>
@@ -284,6 +310,7 @@ function renderScan(scan, findings) {
       <a class="btn ghost" href="/api/scans/${esc(scan.id)}/report.csv">CSV</a>
       <a class="btn ghost" href="/api/scans/${esc(scan.id)}/report.json">JSON</a>
       ${scan.kind === "web" ? `<button class="ghost" id="rescan">Re-scan</button>` : ""}
+      ${scan.kind === "code" ? `<button id="goAi">AI deep review</button>` : ""}
       <button class="danger" id="del">Delete</button>`}
     </div></div>
   ${running ? `<div class="panel"><div class="row" style="justify-content:space-between"><b>Scanning…</b><span class="muted small" id="progMsg">${esc(scan.message)}</span></div>
@@ -298,7 +325,7 @@ function renderScan(scan, findings) {
     <div class="stat"><div class="v">${s.components || 0}</div><div class="l">Components found</div></div>
   </div>` : ""}
   <div class="tabs" id="tabs">
-    ${["findings", ...(scan.kind === "import" ? [] : ["inventory"]), ...(scan.kind === "web" ? ["surface"] : scan.kind === "code" ? ["ai-review"] : []), "log"].map((t) => `<button data-t="${t}" class="${ui.tab === t ? "on" : ""}">${{ findings: `Findings (${findings.length})`, inventory: `Inventory (${(s.inventory || []).length})`, surface: "Attack surface", "ai-review": "AI review", log: "Log" }[t]}</button>`).join("")}
+    ${["findings", ...(scan.kind === "import" ? [] : ["inventory"]), ...(["web", "passive"].includes(scan.kind) ? ["surface"] : scan.kind === "code" ? ["ai-review"] : []), "log"].map((t) => `<button data-t="${t}" class="${ui.tab === t ? "on" : ""}">${{ findings: `Findings (${findings.length})`, inventory: `Inventory (${(s.inventory || []).length})`, surface: "Attack surface", "ai-review": "AI deep review ✦", log: "Log" }[t]}</button>`).join("")}
   </div>
   <div id="tabBody"></div>`;
   $("#cancel")?.addEventListener("click", async () => { await api(`/api/scans/${scan.id}/cancel`, { method: "POST" }); toast("Cancelling…"); });
@@ -308,6 +335,7 @@ function renderScan(scan, findings) {
     catch (e) { toast(e.message, 5000); }
   });
   $$("#tabs button").forEach((b) => (b.onclick = () => { ui.tab = b.dataset.t; renderScan(scan, findings); }));
+  $("#goAi")?.addEventListener("click", () => { ui.tab = "ai-review"; renderScan(scan, findings); });
   const body = $("#tabBody");
   if (ui.tab === "findings") renderFindings(body, findings, running);
   else if (ui.tab === "inventory") renderInventory(body, s.inventory || []);
@@ -363,6 +391,8 @@ function findingHtml(f) {
       ${f.vulns.slice(0, 25).map((v) => `<tr><td class="mono"><a href="https://osv.dev/vulnerability/${encodeURIComponent(v.id)}" target="_blank" rel="noopener">${esc((v.aliases || [])[0] || v.id)}</a></td>
         <td>${sevBadge(v.severity)}${v.cvss ? ` <span class="muted small">${v.cvss}</span>` : ""}</td><td>${esc(v.summary)}</td><td class="hide-sm mono">${esc((v.fixed || []).slice(0, 3).join(", "))}</td></tr>`).join("")}
       </tbody></table></div>${f.vulns.length > 25 ? `<div class="muted small">+${f.vulns.length - 25} more in the JSON export</div>` : ""}` : ""}
+    ${f.ai_verdict ? `<div class="notice ${f.ai_verdict.verdict === "confirmed" ? "err" : f.ai_verdict.verdict === "likely false positive" ? "ok" : ""}" style="margin-top:10px"><b>AI review verdict: ${esc(f.ai_verdict.verdict)}</b> — ${esc(f.ai_verdict.reason || "")}</div>` : ""}
+    ${f.entry_point ? `<h3>Reached via</h3><div class="small"><code>${esc(f.entry_point.method || "GET")} ${esc(f.entry_point.path || "(route not found: search the code for callers)")}</code>${(f.entry_point.params || []).length ? ` · parameter${f.entry_point.params.length > 1 ? "s" : ""}: <code>${f.entry_point.params.map(esc).join("</code>, <code>")}</code>` : ""} <span class="muted">(${esc(f.entry_point.how || "AI review")})</span></div>` : ""}
     ${f.detail || (f.cwe || []).length ? `<h3>Details</h3><div class="small">${esc(f.detail || "")}${(f.cwe || []).length ? ` <span class="muted">${f.cwe.map((c) => `<a href="https://cwe.mitre.org/data/definitions/${esc(c.replace("CWE-", ""))}.html" target="_blank" rel="noopener">${esc(c)}</a>`).join(" ")}</span>` : ""}</div>` : ""}
     ${ev.length ? `<h3>Evidence</h3>${ev.slice(0, 6).map((e) => `<div class="small"><span class="muted">${esc(e.source || "")}</span> <code>${esc(e.location || "")}</code><pre class="evidence"><code>${esc(e.text)}</code></pre></div>`).join("")}` : ""}
     ${(f.locations || []).length > 1 ? `<h3>All locations</h3><pre class="evidence"><code>${esc(f.locations.map((l) => `${l.path}:${l.line}  ${l.code}`).join("\n"))}</code></pre>` : ""}
@@ -371,7 +401,10 @@ function findingHtml(f) {
     ${f.tool_solution ? `<h3>Fix suggested by ${esc(f.source_tool || "the tool")} <span class="muted small">(needs a code change)</span></h3><div class="small">${esc(f.tool_solution)}</div>` : ""}
     ${(f.references || []).length ? `<h3>References</h3><ul class="small">${f.references.map((r) => /^https?:/.test(r) ? `<li><a href="${esc(r)}" target="_blank" rel="noopener">${esc(r)}</a></li>` : `<li>${esc(r)}</li>`).join("")}</ul>` : ""}
     ${f.extended_support ? `<h3>Extended support options</h3><div class="small">${esc(f.extended_support)}</div>` : ""}
-    ${(f.manual_tests || []).length ? `<h3>Manual verification <span class="muted small">(authorized lab only)</span></h3><ul class="tests small">${f.manual_tests.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>` : ""}
+    ${(f.verification_steps || []).length ? `<h3>How to verify safely <span class="muted small">(authorized lab only, from the AI review)</span></h3><ol class="tests small">${f.verification_steps.map((t) => `<li>${esc(t)}</li>`).join("")}</ol>` : ""}
+    ${(f.ai_containment || []).length ? `<h3>Containment suggested by the AI review</h3><ul class="tests small">${f.ai_containment.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>` : ""}
+    ${(f.review_steps || []).length ? `<h3>Confirm in the code <span class="muted small">(pattern matches need a human check)</span></h3><ol class="tests small">${f.review_steps.map((t) => `<li>${esc(t)}</li>`).join("")}</ol>` : ""}
+    ${(f.manual_tests || []).length ? `<h3>${(f.review_steps || []).length ? "Then verify on the running app" : "Manual verification"} <span class="muted small">(authorized lab only)</span></h3><ul class="tests small">${f.manual_tests.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>` : ""}
     <div class="ai">${f.ai_advice ? `<b>AI-assisted plan</b><div class="md small">${esc(f.ai_advice)}</div>` : `<div class="row"><input type="text" class="ctx" placeholder="Optional environment notes (e.g. behind F5, Windows 2012, no egress)"><button class="ghost ai-btn" data-id="${esc(f.id)}">Ask AI for a tailored containment plan</button></div>`}</div>
   </div></details>`;
 }
@@ -418,19 +451,37 @@ function renderSurface(body, s) {
 }
 
 async function renderAiReview(body, scan) {
-  const st = (await api("/api/settings")).llm_status;
-  const existing = scan.summary?.ai_review;
-  body.innerHTML = `<div class="panel">
-    ${!st.enabled ? `<div class="notice">AI assist is off. Enable Claude or a local Ollama model in <a href="#/settings">Settings → AI assist</a>. The rule-based results are complete without it.</div>` :
-      `<div class="notice ${st.send_code || st.provider === "ollama" ? "" : "ok"}">${st.provider === "ollama" ? "Using the local Ollama model; code snippets stay on your network." : st.send_code ? "Code snippets around findings WILL be sent to Claude (" + esc(st.platform) + ")." : "Only metadata (components, findings) will be sent; source snippets are withheld."}</div>
-       <button id="runAi">${existing ? "Re-run" : "Run"} AI code review</button>`}
-    <div id="aiOut" class="ai" style="${existing ? "" : "display:none"}"><div class="md small">${esc(existing || "")}</div></div></div>`;
+  const cfg = await api("/api/settings");
+  const st = scan.summary?.ai_review_status || {};
+  const llm = cfg.llm, enabled = llm.provider === "anthropic";
+  const running = ["queued", "running"].includes(st.state);
+  const where = (cfg.llm_status.platform === "claude_code") ? "your Claude Code login" : "the configured Claude API connection";
+  body.innerHTML = `<div class="panel"><h2>AI deep review</h2>
+    <p class="small">Claude reads the source like a reviewer: finds the entry points, traces user input to dangerous code, checks each pattern match from the automated scan (confirmed / likely false positive / needs runtime check), and looks for what patterns miss (access control, auth, logic, deserialization, file handling…). Each vulnerability it confirms appears in <b>Findings</b> with the URL and parameter, the data flow, safe verification steps and containment.</p>
+    ${!enabled ? `<div class="notice">Connect Claude first in <a href="#/settings">Settings → AI assist</a> (Claude Code with your work login, or an API connection).</div>`
+      : !llm.send_code ? `<div class="notice">Tick <b>"I'm allowed to send source code to this Claude connection"</b> in <a href="#/settings">Settings → AI assist</a> to enable this.</div>`
+      : !scan.summary?.source_dir ? `<div class="notice">The source for this scan isn't kept any more. Upload the archive again to run the AI review.</div>`
+      : `<div class="notice">The source code of this scan will be sent to ${where}. Large codebases can take 10–40 minutes.</div>
+         <div class="row"><button id="runAi" ${running ? "disabled" : ""}>${running ? "Reviewing…" : st.state === "done" ? "Run AI deep review again" : "Run AI deep review"}</button>
+         ${running ? `<button class="danger ghost" id="stopAi">Stop</button>` : ""}
+         ${!running ? `<button class="ghost" id="dropSrc">Delete kept source</button>` : ""}</div>`}
+    ${st.state ? `<dl class="kv small" style="margin-top:12px"><dt>Status</dt><dd>${esc(st.state)}${st.error ? ` — <span style="color:var(--crit)">${esc(st.error)}</span>` : ""}</dd>
+      ${st.engine ? `<dt>Engine</dt><dd>${esc(st.engine)}${st.model ? " · " + esc(st.model) : ""}</dd>` : ""}
+      ${st.found != null ? `<dt>New findings</dt><dd>${st.found} (marked with the Claude badge in Findings)</dd>` : ""}
+      ${st.turns ? `<dt>Steps</dt><dd>${st.turns}${st.cost_usd != null ? ` · reported cost $${Number(st.cost_usd).toFixed(2)}` : ""}</dd>` : ""}</dl>` : ""}
+    ${running ? `<div class="muted small">Progress is in the Log tab (lines starting with [AI]). This page refreshes by itself.</div>` : ""}
+  </div>
+  ${scan.summary?.ai_review ? `<div class="panel"><h2>Reviewer summary</h2><div class="md small">${esc(scan.summary.ai_review)}</div></div>` : ""}`;
   $("#runAi")?.addEventListener("click", async (e) => {
-    e.target.disabled = true; e.target.textContent = "Reviewing… (can take a minute)";
-    try { const r = await api(`/api/scans/${scan.id}/ai-review`, { method: "POST" }); $("#aiOut").style.display = ""; $("#aiOut .md").textContent = r.review; }
-    catch (err) { toast(err.message, 6000); }
-    e.target.disabled = false; e.target.textContent = "Re-run AI code review";
-  });
+    if (!confirm(`Send this scan's source code to ${where} for review?`)) return;
+    e.target.disabled = true;
+    try { await api(`/api/scans/${scan.id}/ai-review`, { method: "POST" }); toast("AI review started"); scanView(scan.id); }
+    catch (err) { toast(err.message, 6000); e.target.disabled = false; } });
+  $("#stopAi")?.addEventListener("click", async () => { await api(`/api/scans/${scan.id}/cancel`, { method: "POST" }); toast("Stopping…"); });
+  $("#dropSrc")?.addEventListener("click", async () => { if (!confirm("Delete the kept source for this scan? The AI review can't run afterwards.")) return;
+    await api(`/api/scans/${scan.id}/source`, { method: "DELETE" }); toast("Source deleted"); scanView(scan.id); });
+  if (running) { clearInterval(pollTimer); pollTimer = setInterval(async () => {
+    const s2 = await api(`/api/scans/${scan.id}`); if (!["queued", "running"].includes(s2.summary?.ai_review_status?.state)) { clearInterval(pollTimer); toast("AI review " + (s2.summary?.ai_review_status?.state || "finished")); renderScan(s2, await api(`/api/scans/${scan.id}/findings`)); } }, 4000); }
 }
 
 // ---------------------------------------------------------------- settings
@@ -474,14 +525,26 @@ async function settings() {
       <div data-plat="vertex"><label>Vertex region</label><input type="text" id="l_gcp_region" placeholder="global" value="${esc(s.llm.gcp_region)}"></div>
       <div data-plat="foundry"><label>Foundry resource</label><input type="text" id="l_foundry_resource" placeholder="my-foundry-resource" value="${esc(s.llm.foundry_resource)}"></div>
     </div>
+    <div class="grid cols-3 llm-claude">
+      <div data-plat="claude_code" style="grid-column: span 2"><label>Claude Code path <span class="muted small">(leave empty to find it automatically)</span></label><input type="text" id="l_claude_cli" placeholder="e.g. C:\\Users\\you\\.local\\bin\\claude.exe" value="${esc(s.llm.claude_cli || "")}"></div>
+      <div><label>Review depth (effort)</label><select id="l_effort"><option value="medium">medium</option><option value="high">high (recommended)</option><option value="xhigh">xhigh</option><option value="max">max (slowest)</option></select></div>
+    </div>
+    <div class="small llm-claude" id="credState" style="margin-top:6px"></div>
     <div class="hint llm-claude" id="platAuth"></div>
     <div class="grid cols-3 llm-ollama">
       <div><label>Ollama URL</label><input type="text" id="ourl" value="${esc(s.llm.ollama_url)}"></div>
       <div><label>Ollama model</label><input type="text" id="omodel" value="${esc(s.llm.ollama_model)}"></div>
     </div>
-    <label class="check llm-claude"><input type="checkbox" id="sendCode" ${s.llm.send_code ? "checked" : ""}> Allow sending source-code snippets to Claude during AI code review <span class="muted">(off = metadata only; check your data-handling policy)</span></label>
-    <div class="hint">Keys and tokens are never saved here. Set them as environment variables on the machine or container running the scanner (or use your cloud login), then press Test.</div>
+    <label class="check llm-claude"><input type="checkbox" id="sendCode" ${s.llm.send_code ? "checked" : ""}> I'm allowed to send source code to this Claude connection <span class="muted">(required for the AI deep code review; check your data-handling policy)</span></label>
+    <div class="hint llm-claude">This app never asks for or stores keys. API connections read them from environment variables on the machine running the scanner; the Claude Code connection uses your own Claude login. See the setup guide for exact steps.</div>
     <div class="row"><button id="saveLlm">Save</button><button class="ghost" id="testLlm">Test connection</button><span id="llmTest" class="small"></span></div></div>
+
+  <div class="panel"><h2>Code review</h2><div class="grid cols-3">
+    <div><label>Semgrep ruleset <span class="muted small">(registry name or local folder)</span></label><input type="text" id="cr_sg" value="${esc(s.code_review.semgrep_config)}"></div>
+    <div><label>AI review: max steps</label><input type="number" min="5" max="300" id="cr_turns" value="${esc(s.code_review.max_turns)}"></div>
+    <div><label>AI review: time limit (min)</label><input type="number" min="5" max="240" id="cr_to" value="${esc(s.code_review.timeout_min)}"></div></div>
+    <div class="hint">"p/default" downloads Semgrep's public rules (internet needed; your code is not uploaded). For offline labs, point to a folder of rules copied in beforehand. More AI steps = more thorough on large codebases, but slower and more expensive.</div>
+    <div class="row"><button id="saveCr">Save</button></div></div>
 
   <div class="panel"><h2>Scan defaults</h2><div class="grid cols-3">
     <div><label>Requests / sec</label><input type="number" step="0.5" id="d_rate" value="${esc(s.scan_defaults.rate_per_sec)}"></div>
@@ -492,16 +555,18 @@ async function settings() {
     <div class="row"><button id="saveDefaults">Save</button></div></div>`;
   $("#prov").value = s.llm.provider || "none";
   $("#plat").value = s.llm.platform || "anthropic";
-  const llmFields = ["base_url", "aws_region", "aws_profile", "workspace_id", "gcp_project", "gcp_region", "foundry_resource"];
-  const llmBody = () => { const b = { provider: $("#prov").value, platform: $("#plat").value, model: $("#model").value.trim(),
-      ollama_url: $("#ourl").value.trim(), ollama_model: $("#omodel").value.trim(), send_code: $("#sendCode").checked };
-    llmFields.forEach((f) => (b[f] = $("#l_" + f).value.trim())); return b; };
+  const llmFields = ["base_url", "aws_region", "aws_profile", "workspace_id", "gcp_project", "gcp_region", "foundry_resource", "claude_cli", "effort"];
+  $("#l_effort").value = s.llm.effort || "high";
+  const showCred = () => { const plat = $("#plat").value, e = (lo.env || {})[plat] || {};
+    $("#credState").innerHTML = e.kind === "cli" ? (e.set ? `<span style="color:var(--ok)">✓ Claude Code found on this machine.</span> <span class="muted">Press Test to check it is signed in.</span>` : `<span style="color:var(--crit)">✗ Claude Code not found.</span> <span class="muted">Install it and sign in once (see the guide), or enter its path above.</span>`)
+      : e.kind === "env" ? (e.set ? `<span style="color:var(--ok)">✓ ${esc(e.set)} is set in the scanner's environment.</span>` : `<span class="muted">Needs ${e.names.map(esc).join(" or ")} set in the scanner's environment before it starts.</span>`)
+      : `<span class="muted">Uses your cloud login on this machine.</span>`; };
   const syncLlm = () => { const prov = $("#prov").value, plat = $("#plat").value;
     document.querySelectorAll(".llm-claude").forEach((el) => (el.hidden = prov !== "anthropic"));
     document.querySelectorAll(".llm-ollama").forEach((el) => (el.hidden = prov !== "ollama"));
     document.querySelectorAll("[data-plat]").forEach((el) => (el.hidden = !el.dataset.plat.split(" ").includes(plat)));
     $("#platAuth").textContent = "Credentials: " + (lo.platforms[plat] || {}).auth;
-    $("#testLlm").disabled = prov === "none"; };
+    $("#testLlm").disabled = prov === "none"; showCred(); };
   $("#prov").onchange = $("#plat").onchange = syncLlm; syncLlm();
   $("#testLlm").onclick = async () => { const out = $("#llmTest"); out.textContent = "Testing…"; out.style.color = "";
     try { const r = await api("/api/llm/test", { method: "POST", body: llmBody() });
@@ -513,6 +578,7 @@ async function settings() {
   $("#saveScope").onclick = () => saved(api("/api/scope", { method: "PUT", body: { allow: lines("#allow"), deny: lines("#deny") } }));
   $("#saveFeeds").onclick = () => saved(api("/api/settings", { method: "PUT", body: { feeds: { online: $("#online").checked, osv: $("#osv").checked } } }));
   $("#saveLlm").onclick = () => saved(api("/api/settings", { method: "PUT", body: { llm: llmBody() } }));
+  $("#saveCr").onclick = () => saved(api("/api/settings", { method: "PUT", body: { code_review: { semgrep_config: $("#cr_sg").value.trim(), max_turns: +$("#cr_turns").value, timeout_min: +$("#cr_to").value } } }));
   $("#saveDefaults").onclick = () => saved(api("/api/settings", { method: "PUT", body: { scan_defaults: { rate_per_sec: +$("#d_rate").value, concurrency: +$("#d_conc").value, max_pages: +$("#d_pages").value, timeout: +$("#d_to").value, verify_tls: $("#d_tls").checked } } }));
   $("#checkConn").onclick = async () => { $("#conn").textContent = "Checking…"; const r = await api("/api/feeds?check=true");
     $("#conn").innerHTML = Object.entries(r.connectivity).map(([k, v]) => `${esc(k)}: ${v ? '<span style="color:var(--ok)">reachable</span>' : '<span style="color:var(--crit)">unreachable</span>'}`).join(" · "); };

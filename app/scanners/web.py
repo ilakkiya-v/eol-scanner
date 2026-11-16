@@ -209,6 +209,10 @@ class WebScanner:
     async def _run_probe(self, p: dict) -> None:
         url = urljoin(self.target, p["path"])
         r = await self._request(p["method"], url)
+        self._apply_probe(p, url, r)
+
+    def _apply_probe(self, p: dict, url: str, r: Optional[httpx.Response]) -> None:
+        """Evaluate a probe against a response (live, or recorded in a Burp/HAR file)."""
         if r is None or r.status_code >= 500 or r.status_code in (404, 410):
             return
         if p["method"] == "HEAD":

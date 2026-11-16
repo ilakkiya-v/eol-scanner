@@ -365,6 +365,40 @@ KB: dict[str, dict] = {
 }
 
 
+# ---------------------------------------------------------------- manual code review (for code findings)
+# A pattern match says "look here". These steps turn it into a confirmed (or dismissed) finding, then hand over to the
+# lab check in the KB entry's "manual" list.
+CODE_REVIEW_STEPS = [
+    "Open each listed location and trace the value at the flagged line back to where it comes from: request parameter, "
+    "header, cookie, uploaded file, message queue, or the database. If it is only constants or trusted config, mark it a false positive.",
+    "Find how a user reaches this code: the route / controller / servlet mapping / page that calls it (search the codebase for the "
+    "function or class name, and check web.xml, routes, urls.py, Global.asax or the framework's router). Note the URL and parameter name.",
+    "Check for protection between input and this line: type conversion (e.g. int parsing), allowlist validation, a safe API "
+    "(parameterized query, argument array, auto-escaping template), or a framework filter. Partial blocklists don't count.",
+    "If it is reachable and unprotected, confirm it on the running lab app with the dynamic check below, using the URL and parameter you found.",
+    "Search for the same pattern elsewhere: legacy code is usually copy-pasted, so one confirmed instance often means several.",
+]
+CODE_KB_STEPS = {
+    "sql-injection": ["Check which database account the connection string uses and what it can do (DDL, xp_cmdshell, file read/write). That decides the impact and the least-privilege fix."],
+    "command-injection": ["Check which OS user the app runs as and whether outbound network access is open; both decide how bad a confirmed injection is."],
+    "code-injection": ["Check whether any part of the evaluated string or template can come from a user, including indirectly via stored data."],
+    "xss": ["Check whether the template engine escapes by default (JSP <c:out>, Razor @, Django/Jinja {{ }}, React JSX) and whether this line bypasses it.",
+            "Note whether session cookies are HttpOnly; if not, a confirmed XSS means account takeover."],
+    "path-traversal": ["Check whether the path is normalized and compared with a base folder before use (getCanonicalPath / realpath / Path.GetFullPath + StartsWith)."],
+    "ssrf": ["List what the server can reach from its network (cloud metadata 169.254.169.254, internal admin APIs, databases) to judge impact."],
+    "xxe": ["Check which parser features are set before parse() is called (disallow-doctype-decl, external-general-entities, XmlResolver = null)."],
+    "open-redirect": ["Check whether the redirect target is compared against an allowlist or forced to be a relative path."],
+    "deserialization": ["Check the Inventory tab for gadget libraries (commons-collections, groovy, spring-core, xstream); their presence makes this exploitable."],
+    "secrets": ["Ask the owner whether the credential is still valid and where else it is used; check git history for older copies.",
+                "Never test a found credential against a live system without the system owner's approval."],
+    "weak-crypto": ["Check what the weak setting protects (passwords, tokens, transport) and whether an attacker could observe or replay it."],
+}
+
+
+def code_review_steps(kb_key: str) -> list[str]:
+    return CODE_REVIEW_STEPS + CODE_KB_STEPS.get(kb_key, [])
+
+
 def _dedupe(items: list[dict]) -> list[dict]:
     seen, out = set(), []
     for i in items:

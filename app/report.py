@@ -80,6 +80,8 @@ def to_markdown(scan: dict, findings: list[dict]) -> str:
             lines += ["", "**All locations:**"] + [f"- `{l.get('path')}:{l.get('line')}` {l.get('code', '')}" for l in f["locations"][:25]]
         if f.get("tool_solution"):
             lines += ["", f"**Fix suggested by {f.get('source_tool', 'the tool')} (needs a code change):** {f['tool_solution']}"]
+        if f.get("review_steps"):
+            lines += ["", "**Confirm in the code:**"] + [f"{i}. {t}" for i, t in enumerate(f["review_steps"], 1)]
         if f.get("manual_tests"):
             lines += ["", "**Manual verification (authorized lab only):**"] + [f"- {t}" for t in f["manual_tests"]]
         if f.get("extended_support"):
@@ -111,3 +113,49 @@ code{{font-size:12px}}</style></head><body>
 <h1>EOL assessment report</h1><p><b>Target:</b> {e(scan['target'])} &nbsp; <b>Scan:</b> {e(scan['id'])} &nbsp; <b>Generated:</b> {e(_ts(dt.datetime.now().timestamp()))}</p>
 <table><tr><th>Severity</th><th>Finding</th><th>EOL date</th><th>Vulns</th><th>Location</th></tr>{''.join(rows)}</table>
 <h2>Details</h2><pre>{e(md)}</pre></body></html>"""
+
+
+# ---------------------------------------------------------------- combined (batch) reports
+def combined(scans: list[dict], findings: dict, fmt: str) -> str:
+    """One report across several scans (e.g. every allowlisted host). findings: {scan_id: [finding, ...]}."""
+    if fmt == "json":
+        return json.dumps([{"scan": {k: v for k, v in s.items() if k != "log"}, "findings": _sorted(findings.get(s["id"], []))}
+                           for s in scans], indent=2, default=str)
+    if fmt == "csv":
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["target", "severity", "category", "title", "product", "version", "eol_date", "status", "cves", "location", "top_containment"])
+        for s in scans:
+            for f in _sorted(findings.get(s["id"], [])):
+                lc = f.get("lifecycle") or {}
+                cves = ";".join(((v.get("aliases") or [v["id"]])[0]) for v in f.get("vulns", [])[:20])
+                w.writerow([s["target"], f["severity"], f["category"], f["title"], f.get("product", ""), f.get("version", ""),
+                            lc.get("eol_date", ""), lc.get("status", ""), cves, f.get("location", ""),
+                            (f.get("containment") or [{}])[0].get("title", "")])
+        return buf.getvalue()
+    # markdown / html: overview table, EOL components across hosts, then each scan's full section
+    lines = ["# Combined EOL assessment", "", f"Targets: {len(scans)}  Generated: {_ts(dt.datetime.now().timestamp())}", "",
+             "| Target | Status | Critical | High | Medium | EOL components |", "|---|---|---|---|---|---|"]
+    eol_hosts: dict[str, set] = {}
+    for s in scans:
+        c = (s.get("summary") or {}).get("severity_counts", {})
+        lines.append(f"| {s['target']} | {s['status']} | {c.get('critical', 0)} | {c.get('high', 0)} | {c.get('medium', 0)} | "
+                     f"{(s.get('summary') or {}).get('eol_components', 0)} |")
+        for f in findings.get(s["id"], []):
+            if (f.get("lifecycle") or {}).get("status") == "eol":
+                eol_hosts.setdefault(f"{f.get('product')} {f.get('version') or ''}".strip(), set()).add(s["target"])
+    if eol_hosts:
+        lines += ["", "## End-of-life components across targets", "", "| Component | Targets |", "|---|---|"]
+        for comp, hosts in sorted(eol_hosts.items(), key=lambda x: -len(x[1])):
+            lines.append(f"| {comp} | {', '.join(sorted(hosts))} |")
+    for s in scans:
+        section = to_markdown(s, findings.get(s["id"], []))
+        lines += ["", "---", "", "#" + section if section.startswith("# ") else section]
+    md = "\n".join(lines)
+    if fmt == "md":
+        return md
+    e = html.escape
+    return (f"<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+            f"<title>Combined EOL report</title><style>body{{font:14px/1.5 system-ui,sans-serif;max-width:1100px;margin:24px auto;"
+            f"padding:0 16px}}pre{{background:#f2f4f7;padding:12px;white-space:pre-wrap;border-radius:6px}}</style></head>"
+            f"<body><h1>Combined EOL assessment</h1><pre>{e(md)}</pre></body></html>")

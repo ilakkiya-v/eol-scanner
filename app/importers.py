@@ -272,6 +272,16 @@ def _plus_more(groups: dict[str, dict]) -> list[dict]:
 
 
 # ---------------------------------------------------------------- detection
+def recorded_traffic_kind(data: bytes) -> Optional[str]:
+    """'burp-items' / 'har' when the file is recorded traffic (analysed passively), else None."""
+    head = data[:4096].decode("utf-8", "ignore").lstrip("\ufeff \r\n\t")
+    if head.startswith("<") and re.search(r"<items\b", head) and re.search(r"<item>|<request\b", data[:200000].decode("utf-8", "ignore")):
+        return "burp-items"
+    if head.startswith("{") and '"log"' in head and re.search(r'"entries"\s*:', data[:200000].decode("utf-8", "ignore")):
+        return "har"
+    return None
+
+
 def parse(data: bytes, filename: str = "") -> tuple[str, list[dict]]:
     """Detect the format and return (tool, findings)."""
     text = data.decode("utf-8-sig", "replace").strip()

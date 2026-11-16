@@ -5,7 +5,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
-from .advisor.mitigations import advise_component, advise_kb
+from .advisor.mitigations import code_review_steps, advise_component, advise_kb
 from .eol import feeds
 from .eol.database import EOL_DB, vparse
 from .scanners.fingerprints import Component
@@ -127,7 +127,10 @@ def enrich_raw(findings: list[dict]) -> list[dict]:
     """Attach containment / manual tests to exposure, config and code findings."""
     for f in findings:
         f.setdefault("id", uuid.uuid4().hex[:12])
-        adv = advise_kb(f.get("kb", f.get("category", "info")))
+        kb = f.get("kb", f.get("category", "info"))
+        adv = advise_kb(kb)
+        if f.get("category") == "code":  # source-code findings: confirm in the code first, then in the lab
+            f.setdefault("review_steps", code_review_steps(kb))
         for k, v in adv.items():
             f.setdefault(k, v)
     return findings

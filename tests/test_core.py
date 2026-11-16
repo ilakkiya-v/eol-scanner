@@ -1,4 +1,5 @@
 """Core safety/logic tests. Run: python -m pytest tests  (or: python tests/test_core.py)"""
+import json
 import os
 import pathlib
 import sys
@@ -226,6 +227,174 @@ def test_zip_windows_unsafe_names_skipped():
     safe_extract(z, d / "out")
     got = sorted(str(p.relative_to(d / "out")).replace(os.sep, "/") for p in (d / "out").rglob("*") if p.is_file())
     assert got == ["ok/fine.txt"], got
+
+
+def test_llm_missing_key_message_is_friendly():
+    try:
+        import anthropic  # noqa: F401
+    except ImportError:
+        return
+    from app.advisor import llm
+    saved = {k: os.environ.pop(k, None) for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
+    try:
+        r = llm.test_connection({"provider": "anthropic", "platform": "anthropic"})
+        assert not r["ok"] and "ANTHROPIC_API_KEY" in r["error"] and "TypeError" not in r["error"], r
+    finally:
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
+
+
+def test_code_findings_have_review_steps():
+    from app import analysis
+    f = analysis.enrich_raw([{"category": "code", "kb": "sql-injection", "severity": "high", "title": "t"}])[0]
+    assert len(f["review_steps"]) >= 5 and f["manual_tests"]
+    w = analysis.enrich_raw([{"category": "config", "kb": "cors", "severity": "high", "title": "t"}])[0]
+    assert "review_steps" not in w
+
+
+def test_routes_map_findings_to_entry_points():
+    from app.scanners import routes
+    java = 'import x;\n@RequestMapping("/api/r")\npublic class C {\n  @GetMapping("/find")\n  Object f(@RequestParam("owner") String o) {\n    q("SELECT " + o);\n  }\n}'
+    ep = routes.entry_point("C.java", java, 6)
+    assert ep["path"] == "/api/r/find" and ep["params"] == ["owner"], ep
+    assert routes.entry_point("src/main/webapp/a/b.jsp", 'x\n<%= request.getParameter("q") %>', 2)["path"] == "/a/b.jsp"
+
+
+def _fake_source():
+    d = pathlib.Path(tempfile.mkdtemp()) / "src"
+    (d / "app").mkdir(parents=True)
+    (d / "app" / "views.py").write_text("def search(request, cur):\n    cur.execute(\"SELECT * FROM t WHERE n='%s'\" % request.GET['n'])\n")
+    return d
+
+
+def test_ai_review_api_tool_loop():
+    try:
+        import anthropic  # noqa: F401
+    except ImportError:
+        return
+    from types import SimpleNamespace as NS
+    from app import db
+    from app.advisor import code_review_ai
+    src = _fake_source()
+    script = [
+        [NS(type="tool_use", id="t1", name="list_files", input={"glob": "**/*.py"})],
+        [NS(type="tool_use", id="t2", name="read_file", input={"path": "app/views.py"}),
+         NS(type="tool_use", id="t3", name="read_file", input={"path": "../../etc/passwd"})],
+        [NS(type="tool_use", id="t4", name="report_finding", input={
+            "title": "SQL injection in search", "severity": "high", "cwe": "CWE-89", "file": "app/views.py", "line": 2,
+            "entry_point": {"method": "GET", "path": "/search", "params": ["n"]}, "data_flow": "request.GET['n'] -> cur.execute",
+            "description": "string formatting into SQL", "confidence": "high",
+            "verification": ["Send a request with a single quote in n and look for a database error"],
+            "containment": ["Allowlist n at the proxy"]}),
+         NS(type="tool_use", id="t5", name="lead_verdict", input={"lead_id": "L1", "verdict": "confirmed", "reason": "reachable"})],
+        [NS(type="text", text="Summary: one confirmed SQL injection.")],
+    ]
+    seen = []
+
+    class FakeMessages:
+        def create(self, **kw):
+            seen.append({**kw, "messages": list(kw["messages"])})
+            content = script[len(seen) - 1]
+            stop = "tool_use" if any(b.type == "tool_use" for b in content) else "end_turn"
+            return NS(content=content, stop_reason=stop, usage=NS(input_tokens=100, cache_read_input_tokens=0, cache_creation_input_tokens=0))
+
+    orig = code_review_ai._client
+    code_review_ai._client = lambda cfg: NS(messages=FakeMessages())
+    db.set_setting("llm", {**db.get_setting("llm"), "provider": "anthropic", "platform": "anthropic", "send_code": True})
+    try:
+        scan = {"summary": {"source_dir": str(src), "inventory": [{"product": "django", "version": "1.11", "status": "eol", "vulns": 7}], "languages": {"Python": 1}}}
+        leads = [{"id": "f1", "category": "code", "severity": "high", "title": "SQL query built with string formatting",
+                  "locations": [{"path": "app/views.py", "line": 2}]}]
+        res = code_review_ai.review(scan, leads, lambda m: None, lambda: False)
+    finally:
+        code_review_ai._client = orig
+    assert len(res["findings"]) == 1 and res["findings"][0]["kb"] == "sql-injection"
+    assert res["findings"][0]["entry_point"]["path"] == "/search" and res["findings"][0]["verification_steps"]
+    assert res["verdicts"] == {"f1": {"verdict": "confirmed", "reason": "reachable"}}
+    assert "one confirmed" in res["summary"]
+    # tool results went back with matching ids; path traversal was refused as a tool error
+    results = seen[2]["messages"][-1]["content"]
+    assert [r["tool_use_id"] for r in results] == ["t2", "t3"]
+    assert "cur.execute" in results[0]["content"] and results[1].get("is_error")
+    assert seen[0].get("cache_control") == {"type": "ephemeral"}
+
+
+def test_ai_review_claude_code_engine():
+    import stat
+    from app import db
+    from app.advisor import code_review_ai
+    src = _fake_source()
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    record = tmp / "record.json"
+    cli = tmp / "claude"
+    cli.write_text(f"""#!{sys.executable}
+import json, sys
+prompt = sys.stdin.read()
+json.dump({{"argv": sys.argv[1:], "prompt_len": len(prompt), "cwd": __import__("os").getcwd(),
+           "has_key": "ANTHROPIC_API_KEY" in __import__("os").environ}}, open({str(record)!r}, "w"))
+out = {{"findings": [{{"title": "Command injection in backup", "severity": "critical", "cwe": "CWE-78", "file": "app/views.py",
+        "line": 2, "verification": ["check"], "containment": ["isolate"]}}],
+       "verdicts": [{{"lead_id": "L1", "verdict": "likely false positive", "reason": "constant"}}], "summary": "done"}}
+print(json.dumps({{"type": "system", "subtype": "init", "model": "claude-mythos-5-2"}}))
+print(json.dumps({{"type": "assistant", "message": {{"content": [{{"type": "tool_use", "name": "Read", "input": {{"file_path": "app/views.py"}}}}]}}}}))
+print(json.dumps({{"type": "result", "result": "```json\\n" + json.dumps(out) + "\\n```", "num_turns": 3, "total_cost_usd": 0.42}}))
+""")
+    cli.chmod(cli.stat().st_mode | stat.S_IEXEC)
+    if os.name == "nt":
+        return  # shebang scripts don't run on Windows; the engine itself is covered on macOS/Linux
+    db.set_setting("llm", {**db.get_setting("llm"), "provider": "anthropic", "platform": "claude_code", "send_code": True,
+                           "claude_cli": str(cli), "model": "claude-mythos-5-2"})
+    os.environ["ANTHROPIC_API_KEY"] = "should-not-leak"
+    try:
+        scan = {"summary": {"source_dir": str(src), "inventory": []}}
+        leads = [{"id": "f9", "category": "code", "severity": "medium", "title": "x", "locations": [{"path": "app/views.py", "line": 2}]}]
+        logs = []
+        res = code_review_ai.review(scan, leads, logs.append, lambda: False)
+    finally:
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+    rec = json.loads(record.read_text())
+    argv = rec["argv"]
+    assert argv[argv.index("--allowedTools") + 1: argv.index("--allowedTools") + 4] == ["Read", "Grep", "Glob"]
+    assert "Bash" in argv and "Edit" in argv and "WebFetch" in argv  # in --disallowedTools
+    assert argv[argv.index("--model") + 1] == "claude-mythos-5-2"
+    assert rec["prompt_len"] > 500 and not rec["has_key"] and pathlib.Path(rec["cwd"]).resolve() == src.resolve()
+    assert res["findings"][0]["kb"] == "command-injection" and res["model"] == "claude-mythos-5-2" and res["cost_usd"] == 0.42
+    assert res["verdicts"] == {"f9": {"verdict": "likely false positive", "reason": "constant"}}
+    assert any("Read app/views.py" in l for l in logs)
+
+
+def test_passive_traffic_analysis():
+    from app import importers
+    from app.scanners import passive
+    d = pathlib.Path(__file__).resolve().parent / "fixtures" / "imports"
+    for name in ("burp-items.xml", "traffic.har"):
+        data = (d / name).read_bytes()
+        kind = importers.recorded_traffic_kind(data)
+        assert kind in ("burp-items", "har"), name
+        entries = passive.read_burp_items(data) if kind == "burp-items" else passive.read_har(json.loads(data))
+        res, hosts = passive.analyze(entries, lambda m: None)
+        comps = {(c.product, c.version) for c in res.components}
+        assert {("apache-http-server", "2.2.15"), ("jquery", "1.12.4"), ("php", "5.6.40")} <= comps, (name, comps)
+        kbs = {f["kb"] for f in res.findings}
+        assert {"security-headers", "cookie-flags", "cors", "cleartext-login", "exposed-manifest"} <= kbs, (name, kbs)
+    assert importers.recorded_traffic_kind((d / "burp.xml").read_bytes()) is None
+
+
+def test_batch_scope_and_combined_report():
+    from app import db, jobs, report
+    db.set_setting("scope", {"allow": ["127.0.0.1"], "deny": []})
+    r = jobs.start_batch(["https://not-allowed.example", "https://also-not.example"], "passive", "t", "", {})
+    assert not r["started"] and len(r["skipped"]) == 2
+    scans = [{"id": "a", "target": "https://a.lab", "status": "done", "kind": "web", "mode": "safe",
+              "summary": {"severity_counts": {"high": 1}, "eol_components": 1}},
+             {"id": "b", "target": "https://b.lab", "status": "done", "kind": "web", "mode": "safe",
+              "summary": {"severity_counts": {}, "eol_components": 1}}]
+    f = {"severity": "high", "category": "eol", "title": "php 5.6 is end-of-life", "product": "php", "version": "5.6",
+         "lifecycle": {"status": "eol"}}
+    md = report.combined(scans, {"a": [f], "b": [dict(f)]}, "md")
+    assert "| php 5.6 | https://a.lab, https://b.lab |" in md and "## EOL assessment: https://a.lab" in md
+    assert report.combined(scans, {"a": [f], "b": []}, "csv").count("\n") == 2
 
 
 if __name__ == "__main__":

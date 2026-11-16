@@ -60,7 +60,7 @@ The script:
 3. installs the packages;
 4. runs the self-tests.
 
-It ends with 14 `ok` lines and **Done**. If the browser crawl isn't installed, one of those lines says `skip` instead, which is fine.
+It ends with 21 `ok` lines and **Done**. If the browser crawl isn't installed, one of those lines says `skip` instead, which is fine.
 
 Optional extras:
 
@@ -141,22 +141,38 @@ Notes:
 
 ## Connect your company's Claude (optional)
 
-See [GETTING_STARTED.md, section 5](GETTING_STARTED.md#5-connect-it-to-your-companys-claude-optional) for which connection to pick. A Claude Enterprise seat alone isn't API access.
+The full explanation is in [GETTING_STARTED.md, section 3](GETTING_STARTED.md#3-connect-your-companys-claude-for-the-ai-features). The short version for Windows:
 
-On Windows, set the key in the PowerShell window **before** starting the scanner. It then lasts only for that window, which is the safest option:
+**With your work Claude login (recommended, no API key):**
+
+1. In PowerShell, install Claude Code:
+
+   ```powershell
+   irm https://claude.ai/install.ps1 | iex
+   ```
+
+   Or use your software center, or `npm install -g @anthropic-ai/claude-code`.
+2. Open a **new** PowerShell window and run `claude`. Sign in with your work account, type `/model` to see your models (Mythos if enabled), then `/exit`.
+3. In the scanner, go to **Settings → AI assist**:
+   - **Provider:** Claude
+   - **Connection:** Claude Code
+   - Tick **I'm allowed to send source code**
+   - Click **Save**, then **Test connection**.
+
+   If it says Claude Code wasn't found, run `where claude` and paste that path into **Claude Code path**.
+
+**With an API key or gateway token:** set it in the PowerShell window **before** starting the scanner. It lasts only for that window, and the app never stores it:
 
 ```powershell
 $env:ANTHROPIC_API_KEY = "sk-ant-..."          # or $env:ANTHROPIC_AUTH_TOKEN for a gateway
 powershell -ExecutionPolicy Bypass -File scripts\start-windows.ps1
 ```
 
-`start-windows.cmd` opens a new window that doesn't see keys set this way. If you start the scanner by double-clicking, set the key as a user environment variable instead (**Start → "Edit environment variables for your account"**). Be aware that this stores the key in your Windows profile in plain text.
+`start-windows.cmd` opens a new window that doesn't see keys set this way. Start from PowerShell as above when using a key.
 
-For AWS (Bedrock), run `aws sso login --profile <name>`, then set `$env:AWS_PROFILE = "<name>"`.
+**AWS (Bedrock):** run `aws sso login --profile <name>`, then `$env:AWS_PROFILE = "<name>"`.
 
-For Google Cloud (Vertex), run `gcloud auth application-default login`.
-
-Then go to **Settings → AI assist → Test connection**.
+**Google Cloud (Vertex):** run `gcloud auth application-default login`.
 
 ---
 

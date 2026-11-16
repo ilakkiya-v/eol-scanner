@@ -1,0 +1,49 @@
+<?xml version="1.0"?>
+<!DOCTYPE items [
+<!ELEMENT items (item*)>
+<!ATTLIST items burpVersion CDATA "">
+]>
+<items burpVersion="2024.1">
+  <item>
+    <url><![CDATA[http://qa-app.lab.corp/]]></url>
+    <host ip="10.20.3.4">qa-app.lab.corp</host><port>80</port><protocol>http</protocol><method><![CDATA[GET]]></method>
+    <path><![CDATA[/]]></path><status>200</status>
+    <request base64="true"><![CDATA[R0VUIC8gSFRUUC8xLjENCkhvc3Q6IHFhLWFwcC5sYWIuY29ycA0KDQo=]]></request>
+    <response base64="true"><![CDATA[SFRUUC8xLjEgMjAwIE9LDQpTZXJ2ZXI6IEFwYWNoZS8yLjIuMTUgKENlbnRPUykgDQpEYXRlOiBNb24sIDE2IE5vdiAyMDI2IDE4OjM2OjM4IEdNVA0KQ29udGVudC1UeXBlOiB0ZXh0L2h0bWwNClgtUG93ZXJlZC1CeTogUEhQLzUuNi40MA0KU2V0LUNvb2tpZTogUEhQU0VTU0lEPWFiYzsgcGF0aD0vDQpDb250ZW50LUxlbmd0aDogNTQ4DQoNCjwhZG9jdHlwZSBodG1sPjxodG1sPjxoZWFkPjx0aXRsZT5MZWdhY3kgUUEgQXBwPC90aXRsZT4KPG1ldGEgbmFtZT0iZ2VuZXJhdG9yIiBjb250ZW50PSJXb3JkUHJlc3MgNC45LjgiPgo8bGluayByZWw9InN0eWxlc2hlZXQiIGhyZWY9Imh0dHBzOi8vbWF4Y2RuLmJvb3RzdHJhcGNkbi5jb20vYm9vdHN0cmFwLzMuMy43L2Nzcy9ib290c3RyYXAubWluLmNzcyI+CjxzY3JpcHQgc3JjPSIvc3RhdGljL2pzL2pxdWVyeS5taW4uanMiPjwvc2NyaXB0Pgo8c2NyaXB0IHNyYz0iL3N0YXRpYy92ZW5kb3IvYW5ndWxhci5qcyI+PC9zY3JpcHQ+CjxzY3JpcHQgc3JjPSJodHRwczovL2NkbmpzLmNsb3VkZmxhcmUuY29tL2FqYXgvbGlicy9tb21lbnQuanMvMi4xOC4xL21vbWVudC5taW4uanMiPjwvc2NyaXB0Pgo8L2hlYWQ+PGJvZHkgbmctYXBwPjxhIGhyZWY9Ii9hYm91dCI+QWJvdXQ8L2E+PGEgaHJlZj0iL2xvZ2luIj5Mb2dpbjwvYT48YSBocmVmPSIvYXBwIj5EYXNoYm9hcmQgKFNQQSk8L2E+PGEgaHJlZj0iL2xvZ291dCI+TG9nb3V0PC9hPjwvYm9keT48L2h0bWw+]]></response>
+  </item>
+  <item>
+    <url><![CDATA[http://qa-app.lab.corp/static/js/jquery.min.js]]></url>
+    <host ip="10.20.3.4">qa-app.lab.corp</host><port>80</port><protocol>http</protocol><method><![CDATA[GET]]></method>
+    <path><![CDATA[/static/js/jquery.min.js]]></path><status>200</status>
+    <request base64="true"><![CDATA[R0VUIC9zdGF0aWMvanMvanF1ZXJ5Lm1pbi5qcyBIVFRQLzEuMQ0KSG9zdDogcWEtYXBwLmxhYi5jb3JwDQoNCg==]]></request>
+    <response base64="true"><![CDATA[SFRUUC8xLjEgMjAwIE9LDQpTZXJ2ZXI6IEFwYWNoZS8yLjIuMTUgKENlbnRPUykgDQpEYXRlOiBNb24sIDE2IE5vdiAyMDI2IDE4OjM2OjM4IEdNVA0KQ29udGVudC1UeXBlOiBhcHBsaWNhdGlvbi9qYXZhc2NyaXB0DQpYLVBvd2VyZWQtQnk6IFBIUC81LjYuNDANClNldC1Db29raWU6IFBIUFNFU1NJRD1hYmM7IHBhdGg9Lw0KQ29udGVudC1MZW5ndGg6IDkwDQoNCi8qISBqUXVlcnkgdjEuMTIuNCB8IChjKSBqUXVlcnkgRm91bmRhdGlvbiB8IGpxdWVyeS5vcmcvbGljZW5zZSAqLwohZnVuY3Rpb24oYSxiKXt9KHRoaXMpOw==]]></response>
+  </item>
+  <item>
+    <url><![CDATA[http://qa-app.lab.corp/static/vendor/angular.js]]></url>
+    <host ip="10.20.3.4">qa-app.lab.corp</host><port>80</port><protocol>http</protocol><method><![CDATA[GET]]></method>
+    <path><![CDATA[/static/vendor/angular.js]]></path><status>200</status>
+    <request base64="true"><![CDATA[R0VUIC9zdGF0aWMvdmVuZG9yL2FuZ3VsYXIuanMgSFRUUC8xLjENCkhvc3Q6IHFhLWFwcC5sYWIuY29ycA0KDQo=]]></request>
+    <response base64="true"><![CDATA[SFRUUC8xLjEgMjAwIE9LDQpTZXJ2ZXI6IEFwYWNoZS8yLjIuMTUgKENlbnRPUykgDQpEYXRlOiBNb24sIDE2IE5vdiAyMDI2IDE4OjM2OjM4IEdNVA0KQ29udGVudC1UeXBlOiBhcHBsaWNhdGlvbi9qYXZhc2NyaXB0DQpYLVBvd2VyZWQtQnk6IFBIUC81LjYuNDANClNldC1Db29raWU6IFBIUFNFU1NJRD1hYmM7IHBhdGg9Lw0KQ29udGVudC1MZW5ndGg6IDExNw0KDQovKioKICogQGxpY2Vuc2UgQW5ndWxhckpTIHYxLjUuOAogKiAoYykgMjAxMC0yMDE2IEdvb2dsZSwgSW5jLiBodHRwOi8vYW5ndWxhcmpzLm9yZwogKi8KKGZ1bmN0aW9uKHdpbmRvdyl7fSkod2luZG93KTs=]]></response>
+  </item>
+  <item>
+    <url><![CDATA[http://qa-app.lab.corp/package.json]]></url>
+    <host ip="10.20.3.4">qa-app.lab.corp</host><port>80</port><protocol>http</protocol><method><![CDATA[GET]]></method>
+    <path><![CDATA[/package.json]]></path><status>200</status>
+    <request base64="true"><![CDATA[R0VUIC9wYWNrYWdlLmpzb24gSFRUUC8xLjENCkhvc3Q6IHFhLWFwcC5sYWIuY29ycA0KDQo=]]></request>
+    <response base64="true"><![CDATA[SFRUUC8xLjEgMjAwIE9LDQpTZXJ2ZXI6IEFwYWNoZS8yLjIuMTUgKENlbnRPUykgDQpEYXRlOiBNb24sIDE2IE5vdiAyMDI2IDE4OjM2OjM4IEdNVA0KQ29udGVudC1UeXBlOiBhcHBsaWNhdGlvbi9qc29uDQpYLVBvd2VyZWQtQnk6IFBIUC81LjYuNDANClNldC1Db29raWU6IFBIUFNFU1NJRD1hYmM7IHBhdGg9Lw0KQ29udGVudC1MZW5ndGg6IDcxDQoNCnsibmFtZSI6ImxlZ2FjeSIsImRlcGVuZGVuY2llcyI6eyJsb2Rhc2giOiI0LjE3LjQiLCJleHByZXNzIjoiNC4xNS4yIn19]]></response>
+  </item>
+  <item>
+    <url><![CDATA[http://qa-app.lab.corp/login]]></url>
+    <host ip="10.20.3.4">qa-app.lab.corp</host><port>80</port><protocol>http</protocol><method><![CDATA[GET]]></method>
+    <path><![CDATA[/login]]></path><status>200</status>
+    <request base64="true"><![CDATA[R0VUIC9sb2dpbiBIVFRQLzEuMQ0KSG9zdDogcWEtYXBwLmxhYi5jb3JwDQoNCg==]]></request>
+    <response base64="true"><![CDATA[SFRUUC8xLjEgMjAwIE9LDQpTZXJ2ZXI6IEFwYWNoZS8yLjIuMTUgKENlbnRPUykgDQpEYXRlOiBNb24sIDE2IE5vdiAyMDI2IDE4OjM2OjM4IEdNVA0KQ29udGVudC1UeXBlOiB0ZXh0L2h0bWwNClgtUG93ZXJlZC1CeTogUEhQLzUuNi40MA0KU2V0LUNvb2tpZTogUEhQU0VTU0lEPWFiYzsgcGF0aD0vDQpDb250ZW50LUxlbmd0aDogMTQ3DQoNCjxodG1sPjxib2R5Pjxmb3JtIG1ldGhvZD0icG9zdCIgYWN0aW9uPSIvbG9naW4iPjxpbnB1dCBuYW1lPSJ1c2VyIj48aW5wdXQgdHlwZT0icGFzc3dvcmQiIG5hbWU9InBhc3MiPjxidXR0b24+U2lnbiBpbjwvYnV0dG9uPjwvZm9ybT48L2JvZHk+PC9odG1sPg==]]></response>
+  </item>
+  <item>
+    <url><![CDATA[http://qa-app.lab.corp/api/v1/widgets]]></url>
+    <host ip="10.20.3.4">qa-app.lab.corp</host><port>80</port><protocol>http</protocol><method><![CDATA[GET]]></method>
+    <path><![CDATA[/api/v1/widgets]]></path><status>200</status>
+    <request base64="true"><![CDATA[R0VUIC9hcGkvdjEvd2lkZ2V0cyBIVFRQLzEuMQ0KSG9zdDogcWEtYXBwLmxhYi5jb3JwDQpPcmlnaW46IGh0dHBzOi8vZXZpbC10ZW5hbnQuZXhhbXBsZQ0KDQo=]]></request>
+    <response base64="true"><![CDATA[SFRUUC8xLjEgMjAwIE9LDQpTZXJ2ZXI6IEFwYWNoZS8yLjIuMTUgKENlbnRPUykgDQpEYXRlOiBNb24sIDE2IE5vdiAyMDI2IDE4OjM2OjM4IEdNVA0KQ29udGVudC1UeXBlOiBhcHBsaWNhdGlvbi9qc29uDQpYLVBvd2VyZWQtQnk6IFBIUC81LjYuNDANClNldC1Db29raWU6IFBIUFNFU1NJRD1hYmM7IHBhdGg9Lw0KQWNjZXNzLUNvbnRyb2wtQWxsb3ctT3JpZ2luOiBodHRwczovL2V2aWwtdGVuYW50LmV4YW1wbGUNCkFjY2Vzcy1Db250cm9sLUFsbG93LUNyZWRlbnRpYWxzOiB0cnVlDQpDb250ZW50LUxlbmd0aDogMg0KDQpbXQ==]]></response>
+  </item>
+</items>

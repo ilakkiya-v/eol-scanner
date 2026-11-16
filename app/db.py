@@ -67,9 +67,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # llm: non-secret routing values only; keys/tokens come from the environment (see advisor/llm.py)
     "llm": {"provider": "none", "platform": "anthropic", "model": "claude-opus-5-5", "fallback": True,
             "base_url": "", "aws_region": "", "aws_profile": "", "workspace_id": "", "gcp_project": "",
-            "gcp_region": "global", "foundry_resource": "",
+            "gcp_region": "global", "foundry_resource": "", "effort": "high", "claude_cli": "",
             "ollama_url": "http://host.docker.internal:11434", "ollama_model": "llama3.1", "send_code": False},
     "feeds": {"online": True, "osv": True},
+    # AI deep review + optional Semgrep. semgrep_config: a registry ruleset (needs internet) or a local rules folder.
+    "code_review": {"semgrep_config": "p/default", "max_turns": 60, "max_input_tokens": 4000000, "timeout_min": 45},
     "scan_defaults": {"rate_per_sec": 5, "concurrency": 4, "max_pages": 30, "timeout": 10, "verify_tls": False},
 }
 

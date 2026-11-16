@@ -89,8 +89,16 @@ def _run_code(sid: str, archive: Path, options: dict) -> None:
         progress(0.7, "lifecycle + vulnerability lookups")
         comp_findings, inventory = analysis.enrich(res.components, feeds_cfg.get("online", True), feeds_cfg.get("osv", True), log, progress)
         raw = analysis.enrich_raw(res.findings)
-        _finish(sid, comp_findings + raw, inventory, {"files_scanned": res.files_scanned, "manifests": res.manifests[:300],
-                                                       "languages": res.languages})
+        extra = {"files_scanned": res.files_scanned, "manifests": res.manifests[:300], "languages": res.languages}
+        if options.get("keep_source", True):
+            extra["source_dir"] = str(work)  # kept for the AI deep review; removed when the scan is deleted
+        if options.get("semgrep"):
+            from .scanners import semgrep_runner
+            progress(0.8, "running Semgrep")
+            sg = semgrep_runner.run(work, db.get_setting("code_review").get("semgrep_config") or "p/default", log, cancelled)
+            raw += analysis.enrich_raw(sg)
+            extra["semgrep"] = len(sg)
+        _finish(sid, comp_findings + raw, inventory, extra)
         # Keep only the small snippet set for optional LLM review; delete extracted source.
         db.cache_set(f"snippets:{sid}", res.snippets)
         db.update_scan(sid, status="cancelled" if cancelled() else "done", progress=1.0, message="complete", finished=time.time())
@@ -102,8 +110,14 @@ def _run_code(sid: str, archive: Path, options: dict) -> None:
         db.update_scan(sid, status="error", message=str(e)[:300], finished=time.time())
     finally:
         _cancel.pop(sid, None)
-        if not options.get("keep_source"):
+        try:
+            archive.unlink()  # the uploaded archive itself is no longer needed
+        except OSError:
+            pass
+        if not options.get("keep_source", True) or db.get_scan(sid) is None or db.get_scan(sid)["status"] == "error":
             shutil.rmtree(archive.parent, ignore_errors=True)
+    if options.get("ai_review") and db.get_scan(sid) and db.get_scan(sid)["status"] == "done":
+        start_ai_review(sid)
 
 
 def start_web(target: str, mode: str, operator: str, ticket: str, options: dict) -> str:
@@ -159,3 +173,120 @@ def import_results(tool: str, filename: str, findings: list[dict], operator: str
     db.update_scan(sid, status="done", progress=1.0, message="imported", finished=time.time(), summary=summary)
     db.append_log(sid, f"imported {len(findings)} findings from {tool} ({filename}) by {operator}")
     return sid
+
+
+def remove_source(sid: str) -> bool:
+    """Delete the kept source of a code scan (called on scan delete or from the UI)."""
+    s = db.get_scan(sid)
+    if not s:
+        return False
+    src = (s.get("summary") or {}).get("source_dir")
+    if src and Path(src).resolve().is_relative_to(UPLOAD_DIR.resolve()):  # never delete outside the uploads folder
+        shutil.rmtree(Path(src).parent, ignore_errors=True)
+        summary = s["summary"]
+        summary.pop("source_dir", None)
+        db.update_scan(sid, summary=summary)
+        return True
+    return False
+
+
+def start_ai_review(sid: str) -> None:
+    s = db.get_scan(sid)
+    summary = s.get("summary") or {}
+    summary["ai_review_status"] = {"state": "queued", "queued": time.time()}
+    db.update_scan(sid, summary=summary)
+    _pool.submit(_run_ai_review, sid)
+
+
+def _run_ai_review(sid: str) -> None:
+    from .advisor import code_review_ai
+
+    def set_status(**kw):
+        s = db.get_scan(sid)
+        if not s:
+            return
+        summary = s.get("summary") or {}
+        summary["ai_review_status"] = {**(summary.get("ai_review_status") or {}), **kw}
+        db.update_scan(sid, summary=summary)
+
+    ev = _cancel.setdefault(sid, threading.Event())
+    ev.clear()
+    log = lambda m: db.append_log(sid, "[AI] " + m)  # noqa: E731
+    set_status(state="running", started=time.time())
+    try:
+        s = db.get_scan(sid)
+        res = code_review_ai.review(s, db.get_findings(sid), log, ev.is_set)
+        new = analysis.enrich_raw(res["findings"])
+        for f in new:
+            db.add_finding(sid, f)
+        for fid, verdict in res.get("verdicts", {}).items():
+            f = db.get_finding(fid)
+            if f:
+                f["ai_verdict"] = verdict
+                db.update_finding(fid, f)
+        s = db.get_scan(sid)
+        summary = s["summary"]
+        summary.update(analysis.summarize(db.get_findings(sid), summary.get("inventory") or []))
+        summary["ai_review"] = res.get("summary", "")
+        db.update_scan(sid, summary=summary)
+        set_status(state="cancelled" if ev.is_set() else "done", finished=time.time(), found=len(new),
+                   model=res.get("model"), turns=res.get("turns"), cost_usd=res.get("cost_usd"), engine=res.get("engine"))
+        log(f"AI review finished: {len(new)} findings, {len(res.get('verdicts', {}))} rule findings re-assessed")
+    except Exception as e:  # noqa: BLE001 - surface any provider error in the UI
+        log("ERROR: " + "".join(traceback.format_exception_only(type(e), e)).strip())
+        set_status(state="error", finished=time.time(), error=str(e)[:500])
+    finally:
+        _cancel.pop(sid, None)
+
+
+def start_batch(targets: list[str], mode: str, operator: str, ticket: str, options: dict) -> dict:
+    """Start one web scan per target (each scope-checked). Scans share a batch id for the combined report."""
+    import uuid
+    bid = "b" + uuid.uuid4().hex[:10]
+    started, skipped = [], []
+    seen = set()
+    for raw in targets:
+        t = raw.strip()
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        try:
+            sid = start_web(t, mode, operator, ticket, {**options, "batch": bid})
+            started.append({"target": t, "id": sid})
+        except scope.OutOfScope as e:
+            skipped.append({"target": t, "reason": str(e)})
+    return {"batch": bid, "started": started, "skipped": skipped}
+
+
+def batch_scans(bid: str) -> list[dict]:
+    return [s for s in db.list_scans(1000) if (s.get("options") or {}).get("batch") == bid]
+
+
+def import_traffic(kind: str, filename: str, data: bytes, operator: str, ticket: str) -> str:
+    """Passive analysis of a Burp items export or HAR file (runs in the background)."""
+    label = {"burp-items": "Burp proxy history", "har": "HAR file"}[kind]
+    sid = db.create_scan("passive", filename, label, operator, ticket, {"source": kind})
+    _pool.submit(_run_traffic, sid, kind, data)
+    return sid
+
+
+def _run_traffic(sid: str, kind: str, data: bytes) -> None:
+    import json as _json
+    from .scanners import passive
+    log, progress, cancelled = _hooks(sid)
+    db.update_scan(sid, status="running", message="reading recorded traffic")
+    try:
+        entries = passive.read_burp_items(data) if kind == "burp-items" else passive.read_har(_json.loads(data.decode("utf-8-sig")))
+        res, hosts = passive.analyze(entries, log)
+        progress(0.6, "lifecycle + vulnerability lookups")
+        feeds_cfg = db.get_setting("feeds")
+        comp_findings, inventory = analysis.enrich(res.components, feeds_cfg.get("online", True), feeds_cfg.get("osv", True), log, progress)
+        raw = analysis.enrich_raw(res.findings)
+        _finish(sid, comp_findings + raw, inventory, {"pages": res.pages[:500], "scripts": res.scripts[:500],
+                                                       "requests": res.requests, "hosts": hosts})
+        db.update_scan(sid, status="done", progress=1.0, message="complete", finished=time.time())
+    except Exception as e:  # noqa: BLE001
+        log("ERROR: " + "".join(traceback.format_exception_only(type(e), e)).strip())
+        db.update_scan(sid, status="error", message=str(e)[:300], finished=time.time())
+    finally:
+        _cancel.pop(sid, None)

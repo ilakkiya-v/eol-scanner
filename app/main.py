@@ -74,6 +74,7 @@ class SettingsIn(BaseModel):
     llm: Optional[dict[str, Any]] = None
     feeds: Optional[dict[str, Any]] = None
     scan_defaults: Optional[dict[str, Any]] = None
+    code_review: Optional[dict[str, Any]] = None
 
 
 class AdviceIn(BaseModel):
@@ -97,7 +98,8 @@ def start_web(body: WebScanIn):
 
 @app.post("/api/scans/code", dependencies=[Depends(auth)])
 async def start_code(file: UploadFile = File(...), operator: str = Form(...), ticket: str = Form(""),
-                     attest: bool = Form(False), include_node_modules: bool = Form(False)):
+                     attest: bool = Form(False), include_node_modules: bool = Form(False), ai_review: bool = Form(False),
+                     semgrep: bool = Form(False), keep_source: bool = Form(True)):
     if not attest:
         raise HTTPException(400, "You must confirm you are authorized to review this code.")
     if not operator.strip():
@@ -113,7 +115,8 @@ async def start_code(file: UploadFile = File(...), operator: str = Form(...), ti
                 raise HTTPException(413, f"upload exceeds {MAX_UPLOAD_BYTES // (1024*1024)} MB")
             out.write(chunk)
     sid = jobs.start_code(file.filename or "upload.zip", dest, operator.strip(), ticket.strip(),
-                          {"include_node_modules": include_node_modules, "size": size})
+                          {"include_node_modules": include_node_modules, "size": size, "ai_review": ai_review,
+                           "semgrep": semgrep, "keep_source": keep_source or ai_review})
     return {"id": sid}
 
 
@@ -131,6 +134,10 @@ async def import_results(file: UploadFile = File(...), operator: str = Form(...)
     data = await file.read(IMPORT_LIMIT + 1)
     if len(data) > IMPORT_LIMIT:
         raise HTTPException(413, "import file exceeds 200 MB")
+    traffic = importers.recorded_traffic_kind(data)
+    if traffic:  # Burp proxy history / HAR: passive fingerprinting of recorded responses, no traffic sent
+        sid = jobs.import_traffic(traffic, file.filename or "traffic", data, operator.strip(), ticket.strip())
+        return {"id": sid, "tool": {"burp-items": "Burp proxy history", "har": "HAR"}[traffic], "imported": None, "passive": True}
     try:
         tool, found = await run_in_threadpool(importers.parse, data, file.filename or "")
     except importers.ImportError_ as e:
@@ -144,7 +151,48 @@ async def import_results(file: UploadFile = File(...), operator: str = Form(...)
 
 @app.get("/api/capabilities", dependencies=[Depends(auth)])
 def capabilities():
-    return {"browser": browser.available()}
+    from .advisor import claude_code
+    from .scanners import semgrep_runner
+    return {"browser": browser.available(), "semgrep": semgrep_runner.available(),
+            "claude_code": claude_code.find_cli(db.get_setting("llm")) is not None, "ai": llm.status()}
+
+
+class BatchIn(WebScanIn):
+    target: str = ""
+    targets: list[str] = []
+
+
+@app.post("/api/batches/web", dependencies=[Depends(auth)])
+def start_batch(body: BatchIn):
+    """Scan several targets with the same settings (e.g. every allowlisted host). Out-of-scope targets are skipped."""
+    if not body.attest:
+        raise HTTPException(400, "You must confirm you are authorized to test these targets.")
+    if not body.operator.strip():
+        raise HTTPException(400, "Operator name is required for the audit trail.")
+    targets = [t for t in body.targets if t.strip()][:200]
+    if not targets:
+        raise HTTPException(400, "Add at least one target.")
+    return jobs.start_batch(targets, body.mode, body.operator.strip(), body.ticket.strip(),
+                            body.model_dump(exclude={"target", "targets", "mode", "operator", "ticket", "attest"}))
+
+
+@app.get("/api/batches/{bid}/report.{fmt}", dependencies=[Depends(auth)])
+def batch_report(bid: str, fmt: str):
+    scans = jobs.batch_scans(bid)
+    if not scans:
+        raise HTTPException(404, "batch not found")
+    if fmt not in ("json", "csv", "md", "html"):
+        raise HTTPException(400, "format must be json, csv, md or html")
+    body = report.combined(scans, {s["id"]: db.get_findings(s["id"]) for s in scans}, fmt)
+    media = {"json": "application/json", "csv": "text/csv", "md": "text/markdown", "html": "text/html"}[fmt]
+    return Response(body, media_type=media, headers={"Content-Disposition": f"attachment; filename=eol-combined-{bid}.{fmt}"})
+
+
+@app.get("/api/scope/hosts", dependencies=[Depends(auth)])
+def scope_hosts():
+    """Allowlist entries that are concrete hosts (wildcards and IP ranges can't be crawled directly)."""
+    allow = db.get_setting("scope").get("allow") or []
+    return [a for a in allow if "*" not in a and "/" not in a]
 
 
 @app.get("/api/scans", dependencies=[Depends(auth)])
@@ -177,6 +225,7 @@ def cancel_scan(sid: str):
 @app.delete("/api/scans/{sid}", dependencies=[Depends(auth)])
 def delete_scan(sid: str):
     jobs.cancel(sid)
+    jobs.remove_source(sid)
     db.delete_scan(sid)
     return {"deleted": sid}
 
@@ -215,17 +264,26 @@ def ai_advise(fid: str, body: AdviceIn):
 
 @app.post("/api/scans/{sid}/ai-review", dependencies=[Depends(auth)])
 def ai_review(sid: str):
+    """Start the AI deep review of a code scan (runs in the background; poll the scan for ai_review_status)."""
     s = db.get_scan(sid)
     if not s or s["kind"] != "code":
         raise HTTPException(404, "code scan not found")
-    snippets = db.cache_get_any_age(f"snippets:{sid}") or []
-    try:
-        text = llm.review_code(db.get_findings(sid), snippets, s["summary"].get("inventory", []))
-    except llm.LLMUnavailable as e:
-        raise HTTPException(503, str(e))
-    s["summary"]["ai_review"] = text
-    db.update_scan(sid, summary=s["summary"])
-    return {"review": text}
+    st = (s.get("summary") or {}).get("ai_review_status") or {}
+    if st.get("state") in ("queued", "running"):
+        raise HTTPException(409, "an AI review is already running for this scan")
+    if not (s.get("summary") or {}).get("source_dir"):
+        raise HTTPException(400, "the source for this scan was not kept or was deleted; upload the archive again")
+    if not llm.status()["enabled"] or db.get_setting("llm").get("provider") != "anthropic":
+        raise HTTPException(400, "connect Claude first: Settings -> AI assist")
+    if not db.get_setting("llm").get("send_code"):
+        raise HTTPException(400, "allow sending source code to your Claude connection first: Settings -> AI assist")
+    jobs.start_ai_review(sid)
+    return {"started": True}
+
+
+@app.delete("/api/scans/{sid}/source", dependencies=[Depends(auth)])
+def delete_source(sid: str):
+    return {"deleted": jobs.remove_source(sid)}
 
 
 # ------------------------------------------------------------------ settings / feeds

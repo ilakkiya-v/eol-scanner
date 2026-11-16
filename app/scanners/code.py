@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath
 from typing import Optional, Callable
 
 from ..config import MAX_EXTRACTED_BYTES, MAX_FILES
-from . import manifests
+from . import manifests, routes
 from .fingerprints import Component, match_js
 
 SKIP_DIRS = {".git", ".svn", ".hg", ".idea", ".vscode", "__pycache__", ".tox", ".venv", "venv", ".gradle", "target/classes"}
@@ -243,6 +243,7 @@ def scan_tree(root: Path, log: Callable[[str], None], progress: Callable[[float,
             all_files.append((rel_dir, f))
     total = max(1, len(all_files))
     rule_hits: dict[str, dict] = {}
+    route_cache: dict[str, list] = {}
     for i, (rel_dir, fname) in enumerate(all_files):
         if cancelled():
             break
@@ -308,7 +309,14 @@ def scan_tree(root: Path, log: Callable[[str], None], progress: Callable[[float,
                     continue
                 if len(hit["locations"]) < 25:
                     redacted = re.sub(r"(['\"])[^'\"]{4,}(['\"])", r"\1***\2", line.strip()) if kb == "secrets" else line.strip()
-                    hit["locations"].append({"path": rel, "line": line_no, "code": redacted[:240]})
+                    loc = {"path": rel, "line": line_no, "code": redacted[:240]}
+                    if kb not in ("secrets", "python2", "php-legacy", "weak-crypto"):
+                        if rel not in route_cache:
+                            route_cache[rel] = routes.routes_in(text)
+                        ep = routes.entry_point(rel, text, line_no, route_cache[rel])
+                        if ep:
+                            loc["entry"] = ep
+                    hit["locations"].append(loc)
                     if kb != "secrets" and len(res.snippets) < 60:
                         lines = text.splitlines()
                         lo, hi = max(0, line_no - 6), min(len(lines), line_no + 5)
@@ -322,6 +330,9 @@ def scan_tree(root: Path, log: Callable[[str], None], progress: Callable[[float,
             "category": "code", "severity": hit["severity"], "title": hit["title"], "kb": hit["kb"], "rule": hit["rid"],
             "location": f"{locs[0]['path']}:{locs[0]['line']}" + (f" (+{len(locs)-1} more)" if len(locs) > 1 else ""),
             "locations": locs, "evidence": locs[0]["code"],
+            **({"entry_point": next((l["entry"] for l in locs if (l.get("entry") or {}).get("path")), None)
+                or next((l["entry"] for l in locs if l.get("entry")), None)}
+               if any(l.get("entry") for l in locs) else {}),
         })
     return res
 

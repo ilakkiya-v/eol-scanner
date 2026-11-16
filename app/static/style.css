@@ -130,7 +130,8 @@ tr.click:hover td { background: var(--panel-2); }
 pre { background: var(--code-bg); border: 1px solid var(--border); padding: 10px 12px; border-radius: 7px; overflow-x: auto; white-space: pre; margin: 6px 0; position: relative; }
 pre .copy { position: absolute; top: 6px; right: 6px; font-size: 11px; padding: 2px 8px; }
 .evidence { white-space: pre-wrap; word-break: break-all; max-height: 240px; overflow: auto; }
-ul.tests li { margin: 4px 0; }
+ul.tests li, ol.tests li { margin: 4px 0; }
+ol.tests { padding-left: 20px; }
 .ai { border: 1px dashed var(--accent); border-radius: 8px; padding: 12px; margin-top: 10px; }
 .ai .md { white-space: pre-wrap; }
 .log { max-height: 480px; overflow: auto; font-family: var(--mono); font-size: 12px; background: var(--code-bg); border-radius: 7px; padding: 10px; border: 1px solid var(--border); }

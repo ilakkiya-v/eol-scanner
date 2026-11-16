@@ -4,6 +4,9 @@ Finds **end-of-life and vulnerable components** in authorized web apps (live sca
 
 - **Web scan**: crawls the target, fingerprints server, framework, CMS and JS-library versions from headers, HTML, JS banners, error pages and exposed lockfiles, then maps each one to its lifecycle (endoflife.date) and known CVEs (OSV.dev). It also checks for exposed files and consoles, risky HTTP methods, legacy TLS, missing security headers, cookie flags, permissive CORS and login forms over HTTP. An optional **headless-browser crawl** renders single-page apps so libraries loaded by JavaScript are found too.
 - **Code review**: upload `.zip`/`.tar.gz`. The tool parses npm, PyPI, Maven/Gradle, Composer, RubyGems, Go, NuGet, Dockerfile `FROM`, runtime pins, vendored JS and bundled JARs (via `pom.properties`), and flags risky legacy patterns plus injection-prone code (SQL, OS command, XSS, file paths, SSRF, XXE, open redirects) in Java, Python, PHP, JavaScript/Node, C#/ASP.NET and classic ASP. It **never executes** the code.
+- **AI deep code review** (optional): Claude reads the uploaded source and traces user input to dangerous code. It confirms or dismisses each pattern match and reports what patterns miss (access control, auth, logic), each with the URL and parameter, safe verification steps and containment. It runs through your own Claude Code login, with Mythos if your org has it, or any Claude API connection.
+- **Multi-target web scans**: scan every allowlisted host in one go and get one combined report showing which end-of-life components run where.
+- **Recorded traffic (passive)**: upload Burp proxy history (**Save items** XML) or a HAR file to find versions, end-of-life components and header/cookie issues without sending any traffic.
 - **Import other tools' results**: OWASP ZAP, Burp Suite, Semgrep, SARIF (CodeQL, Snyk Code, Checkmarx, SonarQube, Bandit…) and Nuclei. Imported findings get the same containment advice and can be merged into an existing scan for one report.
 - **Containment advice** for every finding: network isolation, WAF/virtual-patch rules, proxy config snippets (nginx/Apache/IIS), hardening, detection, extended-support options, and **manual lab verification steps** for the serious ones.
 - **Optional AI assist**: Claude (Anthropic API) or a local Ollama model gives tailored containment plans and a deeper code review. It's off by default, and by default no source code is sent.
@@ -41,10 +44,11 @@ First steps: **Settings → Scope**: add the authorized lab hosts. An empty allo
 
 ## AI assist on your org's Claude
 
-**Settings → AI assist → Provider: Claude**, then pick the **Connection** your org gives you and press **Test connection**. Keys and tokens are never saved in the app: they come from environment variables or your cloud login on the machine/container running the scanner.
+**Settings → AI assist → Provider: Claude**, then pick the **Connection** your org gives you and press **Test connection**. The app never asks for or stores keys. With **Claude Code** it uses your own Claude login (for example Claude Enterprise), so no key is needed. Other connections read keys from environment variables or your cloud login. Step-by-step instructions are in [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md#3-connect-your-companys-claude-for-the-ai-features).
 
 | Connection | Fill in | Credentials (env / login) |
 |---|---|---|
+| **Claude Code** (your Claude / Enterprise login) | optional CLI path | none: run `claude` once and sign in |
 | Anthropic API (direct) | — | `ANTHROPIC_API_KEY` (an org/workspace key) |
 | Company LLM gateway / proxy | Gateway URL | `ANTHROPIC_API_KEY` (x-api-key) or `ANTHROPIC_AUTH_TOKEN` (Bearer) |
 | Amazon Bedrock (or legacy InvokeModel) | AWS region, optional profile | AWS profile/SSO/role, `AWS_*` keys, or `AWS_BEARER_TOKEN_BEDROCK` |
