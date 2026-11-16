@@ -76,6 +76,65 @@ def test_manifests():
     assert (t[0].product, t[0].version) == ("dotnet", "2.1")
 
 
+def test_llm_settings_and_models():
+    from app.advisor import llm
+    assert llm.scrub({"platform": "gateway", "api_key": "x", "auth_token": "y", "aws_secret": "z"}) == {"platform": "gateway"}
+    assert llm.model_for({"platform": "bedrock", "model": "claude-mythos-5-2"}) == "anthropic.claude-mythos-5-2"
+    assert llm.model_for({"platform": "bedrock", "model": "us.anthropic.claude-opus-5-5"}) == "us.anthropic.claude-opus-5-5"
+    assert llm.model_for({"platform": "bedrock", "model": "arn:aws:bedrock:x"}).startswith("arn:")
+    assert llm.model_for({"platform": "anthropic", "model": "claude-mythos-5-2"}) == "claude-mythos-5-2"
+
+
+def test_llm_gateway_retry_without_fallback():
+    """A strict gateway that rejects the fallback beta still works (plain-request retry), with a Bearer token."""
+    try:
+        import anthropic  # noqa: F401
+    except ImportError:
+        print("skip: anthropic SDK not installed")
+        return
+    import threading
+    from http.server import ThreadingHTTPServer
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+    import fake_gateway
+    from app.advisor import llm
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), fake_gateway.H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    old = {k: os.environ.pop(k, None) for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
+    os.environ["ANTHROPIC_AUTH_TOKEN"] = "test-token"
+    try:
+        cfg = {"provider": "anthropic", "platform": "gateway", "model": "claude-mythos-5-2",
+               "base_url": f"http://127.0.0.1:{srv.server_port}"}
+        r = llm.test_connection(cfg)
+        assert r["ok"] and r["reply"] == "OK", r
+        assert fake_gateway.SEEN[-1]["beta"] is None and fake_gateway.SEEN[-1]["model"] == "claude-mythos-5-2"
+        r = llm.test_connection({**cfg, "base_url": ""})
+        assert not r["ok"] and "gateway URL" in r["error"]
+    finally:
+        srv.shutdown()
+        for k, v in old.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+
+
+def test_llm_missing_cloud_config_is_friendly():
+    try:
+        import anthropic  # noqa: F401
+    except ImportError:
+        return
+    from app.advisor import llm
+    saved = {k: os.environ.pop(k, None) for k in ("AWS_REGION", "AWS_DEFAULT_REGION", "ANTHROPIC_AWS_WORKSPACE_ID",
+                                                   "ANTHROPIC_FOUNDRY_RESOURCE", "ANTHROPIC_FOUNDRY_BASE_URL")}
+    try:
+        for plat in ("aws", "foundry"):
+            r = llm.test_connection({"provider": "anthropic", "platform": plat})
+            assert not r["ok"] and r["error"], (plat, r)
+    finally:
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

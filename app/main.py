@@ -38,6 +38,8 @@ async def security_headers(request: Request, call_next):
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["Referrer-Policy"] = "no-referrer"
+    # Revalidate the UI on every load so an upgraded image never runs a stale app.js against a newer API.
+    resp.headers.setdefault("Cache-Control", "no-cache")
     if not request.url.path.startswith("/api/docs"):
         resp.headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
     return resp
@@ -202,8 +204,21 @@ def get_settings():
 @app.put("/api/settings", dependencies=[Depends(auth)])
 def put_settings(body: SettingsIn):
     for k, v in body.model_dump(exclude_none=True).items():
+        if k == "llm":
+            v = llm.scrub(v)  # never persist keys/tokens
         db.set_setting(k, {**db.get_setting(k), **v})
     return db.all_settings()
+
+
+@app.get("/api/llm/options", dependencies=[Depends(auth)])
+def llm_options():
+    return llm.options()
+
+
+@app.post("/api/llm/test", dependencies=[Depends(auth)])
+def llm_test(body: Optional[dict[str, Any]] = None):
+    """Try the given (unsaved) AI settings with a one-line prompt. Runs in a worker thread (sync def)."""
+    return llm.test_connection(body or {})
 
 
 @app.put("/api/scope", dependencies=[Depends(auth)])

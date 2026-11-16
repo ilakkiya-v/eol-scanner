@@ -1,1 +1,3 @@
-anthropic>=0.70
+# Claude SDK with the cloud extras for org connections (Bedrock, Claude Platform on AWS, Vertex, Google Cloud).
+# Microsoft Foundry and Anthropic-compatible company gateways need no extra.
+anthropic[bedrock,vertex,aws,google_cloud]>=0.70

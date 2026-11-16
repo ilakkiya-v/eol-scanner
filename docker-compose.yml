@@ -8,10 +8,19 @@ services:
       - eolscan-data:/data
       # Trust your corporate CA for lab TLS + proxy (optional):
       # - ./corp-ca.pem:/etc/ssl/certs/corp-ca.pem:ro
+      # Cloud logins for org Claude (optional, read-only). The container runs as uid 10001, so the files must be readable:
+      # - ~/.aws:/home/eolscan/.aws:ro                                    # Bedrock / Claude Platform on AWS profiles
+      # - ~/.config/gcloud:/home/eolscan/.config/gcloud:ro                # Vertex / Google Cloud ADC
     environment:
       # EOLSCAN_USER: admin
       # EOLSCAN_PASSWORD: change-me
-      # ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      # --- AI assist credentials: pick the one for your org's connection (Settings -> AI assist -> Connection) ---
+      # ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}            # Anthropic API, or a gateway that takes x-api-key
+      # ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN}      # gateway that takes a Bearer token
+      # AWS_PROFILE: ${AWS_PROFILE}                        # Bedrock / Claude Platform on AWS (or AWS_ACCESS_KEY_ID etc.)
+      # AWS_BEARER_TOKEN_BEDROCK: ${AWS_BEARER_TOKEN_BEDROCK}
+      # GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/gcp.json
+      # ANTHROPIC_FOUNDRY_API_KEY: ${ANTHROPIC_FOUNDRY_API_KEY}
       # HTTPS_PROXY: http://proxy.corp:8080
       # SSL_CERT_FILE: /etc/ssl/certs/corp-ca.pem
       EOLSCAN_MAX_UPLOAD_MB: "500"

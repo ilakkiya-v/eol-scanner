@@ -12,7 +12,7 @@ COPY app ./app
 COPY scripts ./scripts
 
 # Run unprivileged; /data holds the SQLite DB, synced EOL data and transient uploads.
-RUN useradd -r -u 10001 eolscan && mkdir -p /data && chown -R eolscan /data
+RUN useradd -r -m -u 10001 eolscan && mkdir -p /data && chown -R eolscan /data
 USER eolscan
 VOLUME ["/data"]
 EXPOSE 8080

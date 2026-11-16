@@ -17,7 +17,7 @@ docker compose up -d --build        # → http://127.0.0.1:8080
 Without Docker (Python 3.9+):
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # + requirements-llm.txt for Claude
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # + requirements-llm.txt for Claude (incl. Bedrock/Vertex/AWS/GCP clients)
 EOLSCAN_DATA=./data .venv/bin/uvicorn app.main:app --port 8080
 ```
 
@@ -32,6 +32,24 @@ First steps: **Settings → Scope**: add the authorized lab hosts. An empty allo
 | Internal CA | Mount it and set `SSL_CERT_FILE` (see `docker-compose.yml`). TLS verification of targets is off by default. |
 | Shared team VM | Bind to `0.0.0.0` and set `EOLSCAN_USER` / `EOLSCAN_PASSWORD` (HTTP basic auth). |
 | Authenticated apps | Add `Authorization` headers or a `Cookie` per scan. Their values are never stored. |
+
+## AI assist on your org's Claude
+
+**Settings → AI assist → Provider: Claude**, then pick the **Connection** your org gives you and press **Test connection**. Keys and tokens are never saved in the app: they come from environment variables or your cloud login on the machine/container running the scanner.
+
+| Connection | Fill in | Credentials (env / login) |
+|---|---|---|
+| Anthropic API (direct) | — | `ANTHROPIC_API_KEY` (an org/workspace key) |
+| Company LLM gateway / proxy | Gateway URL | `ANTHROPIC_API_KEY` (x-api-key) or `ANTHROPIC_AUTH_TOKEN` (Bearer) |
+| Amazon Bedrock (or legacy InvokeModel) | AWS region, optional profile | AWS profile/SSO/role, `AWS_*` keys, or `AWS_BEARER_TOKEN_BEDROCK` |
+| Claude Platform on AWS | AWS region, workspace ID | AWS profile/SSO/role or `AWS_*` keys |
+| Google Vertex AI | GCP project, region | `gcloud auth application-default login` / `GOOGLE_APPLICATION_CREDENTIALS` |
+| Claude on Google Cloud (Anthropic managed) | GCP project, workspace ID | gcloud ADC |
+| Microsoft Foundry | Foundry resource | `ANTHROPIC_FOUNDRY_API_KEY` |
+
+**Models**: pick a preset or type any ID. `claude-mythos-5-2` works only if Anthropic has verified your organization (for example through the Cyber Verification Program); otherwise use `claude-fable-5-2`, the same model open to everyone, or the default `claude-opus-5-5`. On Bedrock the `anthropic.` prefix is added for you, and inference-profile IDs and ARNs are passed through unchanged. Which models are available depends on your org's account and region; a 403 or 404 on Test usually means that model isn't enabled for you.
+
+The gateway connection only works with gateways that speak the Anthropic Messages API. Gateways that only accept the OpenAI format aren't supported. If a gateway rejects the refusal-fallback option, the scanner retries with a plain request.
 
 ## Scan modes
 
@@ -66,6 +84,8 @@ Extending: add fingerprints in `scanners/fingerprints.py`, probes in `scanners/p
 .venv/bin/python tests/fake_target.py 8899 &      # fake legacy app (Apache 2.2 / PHP 5.6 / AngularJS 1.5…)
 # Settings → Scope → allow 127.0.0.1, then scan http://127.0.0.1:8899 in Active mode
 # Code review → upload tests/fixtures/legacyapp.zip
+.venv/bin/python tests/fake_gateway.py 8898 &     # fake company LLM gateway (strict, rejects beta options)
+# Start the scanner with ANTHROPIC_AUTH_TOKEN=test, then Settings → AI assist → Company gateway → http://127.0.0.1:8898 → Test
 .venv/bin/python tests/test_core.py
 ```
 

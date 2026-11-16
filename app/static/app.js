@@ -370,7 +370,7 @@ async function renderAiReview(body, scan) {
   const existing = scan.summary?.ai_review;
   body.innerHTML = `<div class="panel">
     ${!st.enabled ? `<div class="notice">AI assist is off. Enable Claude or a local Ollama model in <a href="#/settings">Settings → AI assist</a>. The rule-based results are complete without it.</div>` :
-      `<div class="notice ${st.send_code || st.provider === "ollama" ? "" : "ok"}">${st.provider === "ollama" ? "Using the local Ollama model; code snippets stay on your network." : st.send_code ? "Code snippets around findings WILL be sent to the Anthropic API." : "Only metadata (components, findings) will be sent; source snippets are withheld."}</div>
+      `<div class="notice ${st.send_code || st.provider === "ollama" ? "" : "ok"}">${st.provider === "ollama" ? "Using the local Ollama model; code snippets stay on your network." : st.send_code ? "Code snippets around findings WILL be sent to Claude (" + esc(st.platform) + ")." : "Only metadata (components, findings) will be sent; source snippets are withheld."}</div>
        <button id="runAi">${existing ? "Re-run" : "Run"} AI code review</button>`}
     <div id="aiOut" class="ai" style="${existing ? "" : "display:none"}"><div class="md small">${esc(existing || "")}</div></div></div>`;
   $("#runAi")?.addEventListener("click", async (e) => {
@@ -383,7 +383,7 @@ async function renderAiReview(body, scan) {
 
 // ---------------------------------------------------------------- settings
 async function settings() {
-  const [s, feeds] = await Promise.all([api("/api/settings"), api("/api/feeds")]);
+  const [s, feeds, lo] = await Promise.all([api("/api/settings"), api("/api/feeds"), api("/api/llm/options")]);
   const snap = feeds.snapshot || {};
   app.innerHTML = `
   <div class="page-head"><div><h1>Settings</h1><div class="muted">Scope, data feeds, AI assist and scan defaults. Stored in the local data volume.</div></div></div>
@@ -406,15 +406,30 @@ async function settings() {
     <div class="hint">Going into an air-gapped lab? Sync here first (or run <code>python scripts/build_snapshot.py</code>) and run your scans of the same apps once online to warm the OSV cache.</div></div>
 
   <div class="panel"><h2>AI assist <span class="muted small">(optional)</span></h2>
-    <label>Provider</label><select id="prov">
-      <option value="none">Off — rule-based only</option><option value="anthropic">Claude (Anthropic API · needs ANTHROPIC_API_KEY)</option><option value="ollama">Local model via Ollama</option></select>
     <div class="grid cols-3">
-      <div><label>Claude model</label><input type="text" id="model" value="${esc(s.llm.model)}"></div>
+      <div><label>Provider</label><select id="prov">
+        <option value="none">Off — rule-based only</option><option value="anthropic">Claude</option><option value="ollama">Local model via Ollama</option></select></div>
+      <div class="llm-claude"><label>Connection</label><select id="plat">${Object.entries(lo.platforms).map(([k, v]) => `<option value="${esc(k)}">${esc(v.label)}</option>`).join("")}</select></div>
+      <div class="llm-claude"><label>Model <span class="muted small">(pick or type any ID / ARN)</span></label><input type="text" id="model" list="modelPresets" value="${esc(s.llm.model)}">
+        <datalist id="modelPresets">${lo.models.map((m) => `<option value="${esc(m.id)}">${esc(m.label)}</option>`).join("")}</datalist></div>
+    </div>
+    <div class="grid cols-3 llm-claude">
+      <div data-plat="gateway"><label>Gateway URL</label><input type="text" id="l_base_url" placeholder="https://llm-gateway.corp/anthropic" value="${esc(s.llm.base_url)}"></div>
+      <div data-plat="bedrock bedrock_invoke aws"><label>AWS region</label><input type="text" id="l_aws_region" placeholder="us-east-1" value="${esc(s.llm.aws_region)}"></div>
+      <div data-plat="bedrock bedrock_invoke aws"><label>AWS profile <span class="muted small">(optional)</span></label><input type="text" id="l_aws_profile" placeholder="default / sso-profile" value="${esc(s.llm.aws_profile)}"></div>
+      <div data-plat="aws google_cloud"><label>Workspace ID</label><input type="text" id="l_workspace_id" placeholder="wrkspc_…" value="${esc(s.llm.workspace_id)}"></div>
+      <div data-plat="vertex google_cloud"><label>GCP project</label><input type="text" id="l_gcp_project" value="${esc(s.llm.gcp_project)}"></div>
+      <div data-plat="vertex"><label>Vertex region</label><input type="text" id="l_gcp_region" placeholder="global" value="${esc(s.llm.gcp_region)}"></div>
+      <div data-plat="foundry"><label>Foundry resource</label><input type="text" id="l_foundry_resource" placeholder="my-foundry-resource" value="${esc(s.llm.foundry_resource)}"></div>
+    </div>
+    <div class="hint llm-claude" id="platAuth"></div>
+    <div class="grid cols-3 llm-ollama">
       <div><label>Ollama URL</label><input type="text" id="ourl" value="${esc(s.llm.ollama_url)}"></div>
       <div><label>Ollama model</label><input type="text" id="omodel" value="${esc(s.llm.ollama_model)}"></div>
     </div>
-    <label class="check"><input type="checkbox" id="sendCode" ${s.llm.send_code ? "checked" : ""}> Allow sending source-code snippets to the Anthropic API during AI code review <span class="muted">(off = metadata only; check your data-handling policy)</span></label>
-    <div class="row"><button id="saveLlm">Save</button></div></div>
+    <label class="check llm-claude"><input type="checkbox" id="sendCode" ${s.llm.send_code ? "checked" : ""}> Allow sending source-code snippets to Claude during AI code review <span class="muted">(off = metadata only; check your data-handling policy)</span></label>
+    <div class="hint">Keys and tokens are never saved here. Set them as environment variables on the machine or container running the scanner (or use your cloud login), then press Test.</div>
+    <div class="row"><button id="saveLlm">Save</button><button class="ghost" id="testLlm">Test connection</button><span id="llmTest" class="small"></span></div></div>
 
   <div class="panel"><h2>Scan defaults</h2><div class="grid cols-3">
     <div><label>Requests / sec</label><input type="number" step="0.5" id="d_rate" value="${esc(s.scan_defaults.rate_per_sec)}"></div>
@@ -424,11 +439,28 @@ async function settings() {
     <label class="check"><input type="checkbox" id="d_tls" ${s.scan_defaults.verify_tls ? "checked" : ""}> Verify TLS by default</label>
     <div class="row"><button id="saveDefaults">Save</button></div></div>`;
   $("#prov").value = s.llm.provider || "none";
+  $("#plat").value = s.llm.platform || "anthropic";
+  const llmFields = ["base_url", "aws_region", "aws_profile", "workspace_id", "gcp_project", "gcp_region", "foundry_resource"];
+  const llmBody = () => { const b = { provider: $("#prov").value, platform: $("#plat").value, model: $("#model").value.trim(),
+      ollama_url: $("#ourl").value.trim(), ollama_model: $("#omodel").value.trim(), send_code: $("#sendCode").checked };
+    llmFields.forEach((f) => (b[f] = $("#l_" + f).value.trim())); return b; };
+  const syncLlm = () => { const prov = $("#prov").value, plat = $("#plat").value;
+    document.querySelectorAll(".llm-claude").forEach((el) => (el.hidden = prov !== "anthropic"));
+    document.querySelectorAll(".llm-ollama").forEach((el) => (el.hidden = prov !== "ollama"));
+    document.querySelectorAll("[data-plat]").forEach((el) => (el.hidden = !el.dataset.plat.split(" ").includes(plat)));
+    $("#platAuth").textContent = "Credentials: " + (lo.platforms[plat] || {}).auth;
+    $("#testLlm").disabled = prov === "none"; };
+  $("#prov").onchange = $("#plat").onchange = syncLlm; syncLlm();
+  $("#testLlm").onclick = async () => { const out = $("#llmTest"); out.textContent = "Testing…"; out.style.color = "";
+    try { const r = await api("/api/llm/test", { method: "POST", body: llmBody() });
+      out.style.color = r.ok ? "var(--ok)" : "var(--crit)";
+      out.textContent = r.ok ? `Connected · ${r.model} · ${r.seconds}s` : r.error; }
+    catch (e) { out.style.color = "var(--crit)"; out.textContent = e.message; } };
   const lines = (id) => $(id).value.split("\n").map((x) => x.trim()).filter(Boolean);
   const saved = (p) => p.then(() => toast("Saved")).catch((e) => toast(e.message, 5000));
   $("#saveScope").onclick = () => saved(api("/api/scope", { method: "PUT", body: { allow: lines("#allow"), deny: lines("#deny") } }));
   $("#saveFeeds").onclick = () => saved(api("/api/settings", { method: "PUT", body: { feeds: { online: $("#online").checked, osv: $("#osv").checked } } }));
-  $("#saveLlm").onclick = () => saved(api("/api/settings", { method: "PUT", body: { llm: { provider: $("#prov").value, model: $("#model").value, ollama_url: $("#ourl").value, ollama_model: $("#omodel").value, send_code: $("#sendCode").checked } } }));
+  $("#saveLlm").onclick = () => saved(api("/api/settings", { method: "PUT", body: { llm: llmBody() } }));
   $("#saveDefaults").onclick = () => saved(api("/api/settings", { method: "PUT", body: { scan_defaults: { rate_per_sec: +$("#d_rate").value, concurrency: +$("#d_conc").value, max_pages: +$("#d_pages").value, timeout: +$("#d_to").value, verify_tls: $("#d_tls").checked } } }));
   $("#checkConn").onclick = async () => { $("#conn").textContent = "Checking…"; const r = await api("/api/feeds?check=true");
     $("#conn").innerHTML = Object.entries(r.connectivity).map(([k, v]) => `${esc(k)}: ${v ? '<span style="color:var(--ok)">reachable</span>' : '<span style="color:var(--crit)">unreachable</span>'}`).join(" · "); };
