@@ -8,7 +8,7 @@ This guide takes you from a fresh laptop to a working scan in this order:
 4. Connect it to your company's Claude (optional).
 5. Check that everything works.
 
-Commands are given for **macOS / Linux** and for **Windows (PowerShell)**.
+Commands are given for **macOS / Linux** and for **Windows (PowerShell)**. On Windows, [INSTALL_WINDOWS.md](INSTALL_WINDOWS.md) has a one-click installer and Windows-specific troubleshooting.
 
 > Use EOL Scanner only on systems you are authorized to test. Get written approval (a ticket or change request) before scanning lab apps, and check that your company allows running a scanner from your laptop.
 
@@ -184,7 +184,7 @@ Windows: `.venv\Scripts\python tests\test_core.py`
 
 The Docker image doesn't include the tests, so run them with Python. You only need `pip install -r requirements.txt -r requirements-llm.txt` in a venv.
 
-You should see 13 lines starting with `ok`. If Playwright isn't installed, the browser test prints `skip` instead, which is fine.
+You should see 14 lines starting with `ok`. If Playwright isn't installed, the browser test prints `skip` instead, which is fine.
 
 ### b) Live scan of a fake legacy app
 

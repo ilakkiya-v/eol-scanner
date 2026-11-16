@@ -216,6 +216,18 @@ def test_browser_crawl_scoped():
         srv.shutdown()
 
 
+def test_zip_windows_unsafe_names_skipped():
+    d = pathlib.Path(tempfile.mkdtemp())
+    z = d / "win.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        for bad in ("NUL", "dir/con.txt", "a.txt:hidden", "trail.", "sp /x.txt"):
+            zf.writestr(bad, "x")
+        zf.writestr("ok/fine.txt", "ok")
+    safe_extract(z, d / "out")
+    got = sorted(str(p.relative_to(d / "out")).replace(os.sep, "/") for p in (d / "out").rglob("*") if p.is_file())
+    assert got == ["ok/fine.txt"], got
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

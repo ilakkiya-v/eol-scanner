@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import re
 import socket
 import ssl
@@ -305,10 +306,14 @@ class WebScanner:
                     info["cipher"] = ss.cipher()[0] if ss.cipher() else None
                     der = ss.getpeercert(binary_form=True)
             if der:
-                with tempfile.NamedTemporaryFile("w", suffix=".pem", delete=True) as f:
-                    f.write(ssl.DER_cert_to_PEM_cert(der))
-                    f.flush()
+                # Windows can't reopen a NamedTemporaryFile by name while it is open, so close it first.
+                f = tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False, encoding="ascii")
+                try:
+                    with f:
+                        f.write(ssl.DER_cert_to_PEM_cert(der))
                     cert = ssl._ssl._test_decode_cert(f.name)  # noqa: SLF001 - stdlib, no extra deps
+                finally:
+                    os.unlink(f.name)
                 info["not_after"] = cert.get("notAfter")
                 info["issuer"] = dict(x[0] for x in cert.get("issuer", ()))
                 info["subject"] = dict(x[0] for x in cert.get("subject", ()))

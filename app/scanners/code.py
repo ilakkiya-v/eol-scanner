@@ -14,7 +14,7 @@ import uuid
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Callable
+from typing import Optional, Callable
 
 from ..config import MAX_EXTRACTED_BYTES, MAX_FILES
 from . import manifests
@@ -38,19 +38,35 @@ class CodeScanResult:
     snippets: list[dict] = field(default_factory=list)   # for optional LLM review
 
 
+_WIN_RESERVED = re.compile(r"^(?:CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(?:\..*)?$", re.I)
+
+
+def _portable(name: str) -> bool:
+    """False for archive paths Windows would misinterpret (device names like NUL, 'file:stream', trailing dot/space).
+    Checked on every OS so results don't depend on where the scanner runs."""
+    for part in name.split("/"):
+        if part in ("", ".", ".."):
+            continue
+        if ":" in part or _WIN_RESERVED.match(part) or part != part.rstrip(". ") or any(ord(c) < 32 for c in part):
+            return False
+    return True
+
+
 def safe_extract(archive: Path, dest: Path) -> int:
     """Extract zip / tar(.gz) safely. Returns number of files extracted."""
     dest.mkdir(parents=True, exist_ok=True)
     root = dest.resolve()
     total, count = 0, 0
 
-    def target_for(name: str) -> Path:
+    def target_for(name: str) -> Optional[Path]:
         name = name.replace("\\", "/")
         if name.startswith("/") or re.match(r"^[A-Za-z]:", name):
             raise ArchiveError(f"absolute path in archive: {name}")
         t = (root / name).resolve()
         if root not in t.parents and t != root:
             raise ArchiveError(f"path traversal in archive: {name}")
+        if not _portable(name):
+            return None  # Windows device names / alternate data streams / trailing dots: skip, never write
         return t
 
     if zipfile.is_zipfile(archive):
@@ -68,6 +84,8 @@ def safe_extract(archive: Path, dest: Path) -> int:
                 if info.compress_size and info.file_size / max(1, info.compress_size) > 1000 and info.file_size > 50_000_000:
                     raise ArchiveError(f"suspicious compression ratio: {info.filename}")
                 t = target_for(info.filename)
+                if t is None:
+                    continue
                 t.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(info) as src, open(t, "wb") as out:
                     shutil.copyfileobj(src, out, 1 << 20)
@@ -81,6 +99,8 @@ def safe_extract(archive: Path, dest: Path) -> int:
                 if count > MAX_FILES or total > MAX_EXTRACTED_BYTES:
                     raise ArchiveError("archive exceeds extraction limits")
                 t = target_for(m.name)
+                if t is None:
+                    continue
                 t.parent.mkdir(parents=True, exist_ok=True)
                 src = tf.extractfile(m)
                 if src:

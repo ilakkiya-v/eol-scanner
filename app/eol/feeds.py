@@ -52,7 +52,7 @@ def build_snapshot(out: Optional[Path] = None, products: Optional[list[str]] = N
                 "products": data}
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".tmp")
-    tmp.write_text(json.dumps(snapshot, separators=(",", ":")))
+    tmp.write_text(json.dumps(snapshot, separators=(",", ":")), encoding="utf-8")
     tmp.replace(out)
     return out, len(data)
 
@@ -62,7 +62,7 @@ def snapshot_info() -> dict:
     for label, p in (("live", LIVE_SNAPSHOT), ("bundled", BUNDLED_SNAPSHOT)):
         if p.exists():
             try:
-                meta = json.loads(p.read_text())
+                meta = json.loads(p.read_text(encoding="utf-8"))
                 info[label] = {"path": str(p), "generated": meta.get("generated"), "products": len(meta.get("products", {}))}
             except Exception as e:  # pragma: no cover
                 info[label] = {"path": str(p), "error": str(e)}

@@ -13,6 +13,8 @@ Finds **end-of-life and vulnerable components** in authorized web apps (live sca
 
 New here, or setting up on a work laptop? Follow **[docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)**. It covers install, connecting to your company's Claude, and testing.
 
+**Windows:** see **[docs/INSTALL_WINDOWS.md](docs/INSTALL_WINDOWS.md)**, or just double-click `install-windows.cmd` and then `start-windows.cmd`. No admin rights or Docker needed.
+
 
 ```bash
 docker compose up -d --build        # → http://127.0.0.1:8080

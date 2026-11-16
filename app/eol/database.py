@@ -80,11 +80,11 @@ class EOLDatabase:
             products: dict[str, list[dict]] = {}
             meta: dict[str, Any] = {"source": None}
             if src.exists():
-                snap = json.loads(src.read_text())
+                snap = json.loads(src.read_text(encoding="utf-8"))
                 products = snap.get("products", {})
                 meta = {"source": str(src), "generated": snap.get("generated"), "products": len(products)}
             if CURATED_FILE.exists():
-                for k, v in json.loads(CURATED_FILE.read_text()).get("products", {}).items():
+                for k, v in json.loads(CURATED_FILE.read_text(encoding="utf-8")).get("products", {}).items():
                     products.setdefault(k, [dict(c, curated=True) for c in v])
             self.products, self.meta = products, meta
 
