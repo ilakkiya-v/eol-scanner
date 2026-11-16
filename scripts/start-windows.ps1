@@ -36,7 +36,15 @@ if (-not (Test-Path $venvPy)) {
     exit 1
 }
 
-if (-not $env:EOLSCAN_DATA) { $env:EOLSCAN_DATA = Join-Path $root "data" }
+if (-not $env:EOLSCAN_DATA) {
+    if ($root -match "OneDrive") {
+        # OneDrive syncs/locks open files, which breaks the SQLite database: keep data on the local disk instead.
+        $env:EOLSCAN_DATA = Join-Path $env:LOCALAPPDATA "EOLScanner\data"
+        Write-Host "This folder is inside OneDrive, so scan data is stored in $env:EOLSCAN_DATA" -ForegroundColor Yellow
+    } else {
+        $env:EOLSCAN_DATA = Join-Path $root "data"
+    }
+}
 
 $bind = "127.0.0.1"
 if ($Share) {

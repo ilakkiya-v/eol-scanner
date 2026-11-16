@@ -40,6 +40,17 @@ if (Test-Path $venvPy) {
     $problems += "Run the installer first: double-click install-windows.cmd"
 }
 
+# 1b. downloaded-file block and OneDrive ----------------------------------------
+$blocked = @(Get-ChildItem -Path (Join-Path $root "scripts"), $root -Filter "*.*" -File -ErrorAction SilentlyContinue |
+    Where-Object { Get-Item -LiteralPath $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue })
+if ($blocked.Count) {
+    Bad "$($blocked.Count) script(s) are marked as downloaded from the internet, so Windows asks 'Do not run / Run once' (default: Do not run)"
+    $problems += "Unblock the folder once (your own download): open PowerShell in this folder and run:  Get-ChildItem -Recurse | Unblock-File   - then start again"
+} else { Ok "scripts are not blocked" }
+if ($root -match "OneDrive") {
+    Info "the folder is inside OneDrive; scan data is kept in $env:LOCALAPPDATA\EOLScanner instead (OneDrive sync can lock the database)"
+}
+
 # 2. is something listening ---------------------------------------------------
 Write-Host "`n2. Ports"
 foreach ($p in @($Port, 8080)) {
