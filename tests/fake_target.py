@@ -77,4 +77,5 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8899
-    ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
+    host = sys.argv[2] if len(sys.argv) > 2 else "127.0.0.1"  # pass 0.0.0.0 so a Linux Docker container can reach it
+    ThreadingHTTPServer((host, port), H).serve_forever()

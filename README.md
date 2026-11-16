@@ -10,6 +10,9 @@ Finds **end-of-life and vulnerable components** in authorized web apps (live sca
 
 ## Run it
 
+New here, or setting up on a work laptop? Follow **[docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)**. It covers install, connecting to your company's Claude, and testing.
+
+
 ```bash
 docker compose up -d --build        # → http://127.0.0.1:8080
 ```
