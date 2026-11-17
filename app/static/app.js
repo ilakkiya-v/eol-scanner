@@ -504,11 +504,14 @@ function renderComponents(body, comps, inv, running) {
     ${rows.map((i) => `<tr><td><b>${esc(i.product)}</b>${i.package && i.package !== i.product ? `<div class="muted small">${esc(i.ecosystem)}: ${esc(i.package)}</div>` : ""}</td>
       <td class="mono">${esc(i.version || "?")}</td><td>${statusBadge(i.status)}</td><td class="hide-sm">${esc(i.eol_date || "")}</td>
       <td class="hide-sm mono">${esc(i.latest || "")}</td><td>${i.vulns ? `<b style="color:var(--high)">${i.vulns}</b>` : "0"}</td>
-      <td class="hide-sm small muted" style="word-break:break-all">${esc((i.locations || [])[0] || (i.sources || []).join(", "))}</td></tr>`).join("")}
+      <td class="hide-sm small muted" style="word-break:break-all">${seenAt(i)}</td></tr>`).join("")}
     </tbody></table></div></div>
     <h2 class="section-h">Details and containment</h2>` : ""}<div id="compList"></div>`;
   renderFindings($("#compList"), comps, false, "components");
 }
+
+// Where a component was seen; the scanner's own random 404 probe is shown as "error page".
+const seenAt = (i) => esc(((i.locations || [])[0] || (i.sources || []).join(", ")).replace(/^(https?:\/\/[^/]+)\/eolscan-[0-9a-f]+\.html$/, "$1 (error page)"));
 
 const mcHtml = (mc) => `<div class="poc"><div class="poc-h"><b>Manual check (PoC)</b><span class="muted small">benign probe · run only in the authorized lab</span></div>
   ${mc.request ? `<pre><button class="copy ghost" type="button">Copy</button><code>${esc(mc.request)}</code></pre>` : ""}

@@ -2,6 +2,21 @@
 
 Finds **end-of-life and vulnerable components** in authorized web apps (live scan) and source code (zip upload), and tells you how to **contain** them when the code will never be changed.
 
+![EOL Scanner: web scan results with end-of-life components, their CVEs and where each was found](docs/images/eol-components.png)
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/web-findings.png" alt="Web findings with evidence and copyable proxy containment snippets"><br><sub><b>Web findings</b>: evidence plus containment that needs no code change</sub></td>
+    <td width="50%"><img src="docs/images/code-review.png" alt="Code review of an uploaded zip: SQL injection with entry point, evidence and review checklist"><br><sub><b>Code review</b>: entry point, evidence, review checklist, WAF virtual patch</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/attack-surface.png" alt="Attack surface map of endpoints, parameters and how each was found"><br><sub><b>Attack surface</b>: every endpoint and parameter the crawl found</sub></td>
+    <td width="50%"><img src="docs/images/new-web-scan.png" alt="New web scan form with scope check, scan depth, Burp Suite and AI options"><br><sub><b>New scan</b>: scope check, depth, Burp Suite and Claude options</sub></td>
+  </tr>
+</table>
+
+<sub>Screenshots show the bundled fake legacy app (<code>tests/fake_target.py</code>) and sample code (<code>tests/fixtures/legacyapp.zip</code>), not a real system.</sub>
+
 - **Web scan**: crawls the target (links, frames, forms, `robots.txt`, sitemaps, OpenAPI/Swagger documents and endpoints referenced from JavaScript) into an **attack-surface map** of every endpoint and parameter, fingerprints server, framework, CMS and JS-library versions from headers, HTML, JS banners, error pages and exposed lockfiles, then maps each one to its lifecycle (endoflife.date) and known CVEs (OSV.dev). It also checks for exposed files and consoles, risky HTTP methods, legacy TLS, missing security headers, cookie flags, permissive CORS and login forms over HTTP. An optional **headless-browser crawl** renders single-page apps so libraries loaded by JavaScript are found too.
 - **Code review**: upload `.zip`/`.tar.gz`. The tool parses npm, PyPI, Maven/Gradle, Composer, RubyGems, Go, NuGet, Dockerfile `FROM`, runtime pins, vendored JS and bundled JARs (via `pom.properties`), and flags risky legacy patterns plus injection-prone code (SQL, OS command, XSS, file paths, SSRF, XXE, open redirects) in Java, Python, PHP, JavaScript/Node, C#/ASP.NET and classic ASP. It **never executes** the code.
 - **AI review** (optional), for code and web scans:

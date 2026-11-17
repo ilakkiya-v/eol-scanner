@@ -219,7 +219,7 @@ ol.tests { padding-left: 22px; }
 
 /* ---- scan overview: one card per result group (code / web, EOL components, attack surface, AI) */
 .overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin: 0 0 18px; }
-.ov { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; text-align: left; background: var(--panel); color: var(--text);
+.ov { display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start; align-self: stretch; height: auto; margin: 0; gap: 4px; text-align: left; background: var(--panel); color: var(--text);
   border: 1px solid var(--border); border-left: 4px solid var(--border-strong); border-radius: var(--radius); padding: 14px 16px;
   box-shadow: var(--shadow); font-weight: 400; cursor: pointer; }
 .ov:hover { background: var(--panel-2); color: var(--text); border-color: var(--border-strong); }
@@ -240,6 +240,7 @@ ol.tests { padding-left: 22px; }
 .tabs button.on .count { background: var(--accent-soft); color: var(--accent-text); }
 .section-h { margin: 22px 0 10px; }
 .row.between { justify-content: space-between; }
+.ai:empty { display: none; }
 
 /* ---- manual check (PoC) */
 .poc { margin: 14px 0; border: 1px solid var(--accent); border-left-width: 4px; border-radius: var(--radius-sm); background: var(--accent-soft); padding: 12px 14px; }
