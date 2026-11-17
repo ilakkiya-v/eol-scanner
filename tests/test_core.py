@@ -397,6 +397,23 @@ def test_batch_scope_and_combined_report():
     assert report.combined(scans, {"a": [f], "b": []}, "csv").count("\n") == 2
 
 
+def test_all_scan_modes_run():
+    """Every mode runs end to end (Active once failed on a name clash in the directory-listing check)."""
+    import asyncio
+    from app.scanners.web import WebScanner
+    srv = _serve_fake_target()
+    try:
+        for mode in ("passive", "safe", "active"):
+            sc = WebScanner(f"http://127.0.0.1:{srv.server_port}", mode, {"rate_per_sec": 300, "max_pages": 20},
+                            {"allow": ["127.0.0.1"], "deny": []}, lambda m: None, lambda p, m="": None, lambda: False)
+            r = asyncio.run(sc.run())
+            assert r.pages and r.endpoints, mode
+            if mode == "active":
+                assert any(f["kb"] == "directory-listing" for f in r.findings)
+    finally:
+        srv.shutdown()
+
+
 def test_discovery_helpers():
     from app.scanners import discovery as d
     js = "axios.get('/api/v1/orders?status=open');var r={url:'/reports/export.do'};fetch(`/api/v1/users/${id}/profile`);x='/img/a.png'"

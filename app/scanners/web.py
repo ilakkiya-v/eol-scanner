@@ -438,12 +438,12 @@ class WebScanner:
                 path = urlsplit(s).path.rsplit("/", 1)[0] + "/"
                 if path != "/":
                     dirs.add(urljoin(self.target, path))
-        for d in list(dirs)[:10]:
-            r = await self._request("GET", d)
+        for dir_url in list(dirs)[:10]:
+            r = await self._request("GET", dir_url)
             if r is not None and r.status_code == 200 and re.search(rb"<title>Index of /|Directory Listing For|\[To Parent Directory\]", r.content or b"", re.I):
                 self._finding(category="exposure", severity="medium", title="Directory listing enabled", kb="directory-listing",
-                              location=d, evidence=(r.content or b"")[:300].decode("utf-8", "ignore"))
-                self._add(match_html((r.content or b"").decode("utf-8", "ignore"), d))
+                              location=dir_url, evidence=(r.content or b"")[:300].decode("utf-8", "ignore"))
+                self._add(match_html((r.content or b"").decode("utf-8", "ignore"), dir_url))
 
     def _tls_info(self) -> dict:
         p = urlsplit(self.target)
