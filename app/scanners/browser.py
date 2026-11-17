@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import urljoin, urlsplit
 
 from .. import scope
+from .discovery import SCRIPT, STATIC, UNSAFE_LINK
 from .fingerprints import JS_LIBS, Component, match_html, match_js, match_js_url
 
 # product -> (OSV ecosystem, package) so live-page versions get CVE lookups too
@@ -57,7 +58,7 @@ _VERSION_PROBE = r"""() => {
   return out;
 }"""
 
-_SKIP_LINK = re.compile(r"\.(?:png|jpe?g|gif|svg|ico|pdf|zip|gz|mp4|woff2?|ttf|css|js)(?:\?|$)|logout|signout|delete|remove", re.I)
+_SKIP_LINK = re.compile(f"{STATIC.pattern}|{SCRIPT.pattern}|{UNSAFE_LINK.pattern}", re.I)
 
 
 def available() -> bool:
@@ -104,10 +105,14 @@ async def crawl(sc: "WebScanner") -> None:
         sc.res.requests += 1
         if request.resource_type in ("xhr", "fetch"):
             api_calls.add(f"{request.method} {url.split('?')[0]}")
+            if url.lower().startswith(origin):
+                sc.endpoints.add(request.method, url, source="browser")
         await route.continue_()
 
     launch: dict = {"headless": True}
-    if sc.opt.get("use_proxy") and (os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")):
+    if sc.opt.get("proxy_url"):
+        launch["proxy"] = {"server": sc.opt["proxy_url"]}
+    elif sc.opt.get("use_proxy") and (os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")):
         launch["proxy"] = {"server": os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy"),
                            "bypass": os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""}
     extra = dict(sc.opt.get("headers") or {})
@@ -118,7 +123,7 @@ async def crawl(sc: "WebScanner") -> None:
     try:
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(**launch)
-            ctx = await browser.new_context(ignore_https_errors=not sc.opt.get("verify_tls"), service_workers="block",
+            ctx = await browser.new_context(ignore_https_errors=not sc.opt.get("verify_tls") or bool(sc.opt.get("proxy_url")), service_workers="block",
                                             accept_downloads=False, extra_http_headers=extra,
                                             user_agent=sc.client.headers.get("user-agent"))
             await ctx.route("**/*", gate)
@@ -159,6 +164,8 @@ async def crawl(sc: "WebScanner") -> None:
                 links = await page.eval_on_selector_all("a[href]", "els => els.map(e => e.href)")
                 for href in links:
                     full = urljoin(page.url, href).split("#")[0]
+                    if full.lower().startswith(origin):
+                        sc.endpoints.add("GET", full, source="browser")
                     if full.lower().startswith(origin) and full not in seen and not _SKIP_LINK.search(full):
                         seen.add(full)
                         queue.append(full)
@@ -175,5 +182,6 @@ async def crawl(sc: "WebScanner") -> None:
         if s not in sc.res.scripts:
             sc.res.scripts.append(s)
     sc.res.api_endpoints = sorted(api_calls)[:300]
+    sc.res.endpoints = sc.endpoints.to_list()
     sc.log(f"browser crawl: {pages_done} pages rendered, {len(script_urls)} scripts, {len(api_calls)} API endpoints"
            + (f", blocked {len(blocked)} out-of-scope hosts" if blocked else ""))

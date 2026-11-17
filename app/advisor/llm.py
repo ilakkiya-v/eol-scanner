@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from typing import Optional
 
@@ -278,3 +279,57 @@ def advise_finding(f: dict, context: Optional[str] = None) -> str:
         + (f"\nEnvironment notes from the operator: {context}\n" if context else "")
     )
     return complete(prompt)
+
+
+def _code_excerpt(f: dict, scan: Optional[dict]) -> str:
+    """A few lines around each location of a code finding, read from the kept source (only if sending code is allowed)."""
+    from pathlib import Path
+    src = ((scan or {}).get("summary") or {}).get("source_dir")
+    if not src or not db.get_setting("llm").get("send_code"):
+        return ""
+    root = Path(src).resolve()
+    out = []
+    for loc in (f.get("locations") or [])[:3]:
+        try:
+            p = (root / str(loc.get("path", "")).lstrip("/\\")).resolve()
+            if root not in p.parents or not p.is_file():
+                continue
+            lines = p.read_text("utf-8", "ignore").splitlines()
+            n = int(loc.get("line") or 1)
+            lo, hi = max(1, n - 25), min(len(lines), n + 25)
+            out.append(f"--- {loc.get('path')} lines {lo}-{hi}\n" + "\n".join(f"{i}: {lines[i - 1][:300]}" for i in range(lo, hi + 1)))
+        except (OSError, ValueError):
+            continue
+    return "\n".join(out)
+
+
+def manual_check_for(f: dict) -> dict:
+    """Hand-run manual check (benign-probe PoC) for one finding, as {request, probe, expected, steps}."""
+    from .code_review_ai import MANUAL_CHECK_RULES, manual_check
+    scan = db.get_scan(db.finding_scan_id(f["id"]) or "")
+    brief = _finding_brief(f)
+    for k in ("detail", "entry_point", "cwe", "source_tool"):
+        if f.get(k):
+            brief[k] = f[k]
+    ev = f.get("evidence")
+    brief["evidence"] = (ev if isinstance(ev, str) else json.dumps(ev, default=str))[:1500] if ev else ""
+    target = (scan or {}).get("target", "")
+    code = _code_excerpt(f, scan) if f.get("category") == "code" else ""
+    prompt = (
+        "Write a manual check (a proof of concept the tester runs by hand) for this finding from an authorized "
+        "assessment of an internal lab application. " + MANUAL_CHECK_RULES + "\n"
+        "If the finding is about an end-of-life component, the check confirms the exact version and whether the "
+        "vulnerable feature is exposed (which URL, which response shows it), not an exploit.\n"
+        "Reply with ONLY a JSON object: {\"request\": \"raw HTTP request template with the probe in place\", "
+        "\"probe\": \"the benign value and why it is safe\", \"expected\": \"what in the response confirms or rules out "
+        "the issue\", \"steps\": [\"short Burp Repeater / browser steps\"]}\n\n"
+        f"Scan target: {target or 'source code review'}\nFinding:\n```json\n{json.dumps(brief, indent=1, default=str)}\n```\n"
+        + (f"\nRelevant code:\n```\n{code}\n```\n" if code else "")
+    )
+    text = complete(prompt, max_tokens=4000)
+    m = re.search(r"\{.*\}", text, re.S)
+    try:
+        mc = manual_check(json.loads(m.group(0))) if m else None
+    except ValueError:
+        mc = None
+    return mc or {"request": "", "probe": "", "expected": text.strip()[:3000], "steps": []}

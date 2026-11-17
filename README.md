@@ -2,15 +2,20 @@
 
 Finds **end-of-life and vulnerable components** in authorized web apps (live scan) and source code (zip upload), and tells you how to **contain** them when the code will never be changed.
 
-- **Web scan**: crawls the target, fingerprints server, framework, CMS and JS-library versions from headers, HTML, JS banners, error pages and exposed lockfiles, then maps each one to its lifecycle (endoflife.date) and known CVEs (OSV.dev). It also checks for exposed files and consoles, risky HTTP methods, legacy TLS, missing security headers, cookie flags, permissive CORS and login forms over HTTP. An optional **headless-browser crawl** renders single-page apps so libraries loaded by JavaScript are found too.
+- **Web scan**: crawls the target (links, frames, forms, `robots.txt`, sitemaps, OpenAPI/Swagger documents and endpoints referenced from JavaScript) into an **attack-surface map** of every endpoint and parameter, fingerprints server, framework, CMS and JS-library versions from headers, HTML, JS banners, error pages and exposed lockfiles, then maps each one to its lifecycle (endoflife.date) and known CVEs (OSV.dev). It also checks for exposed files and consoles, risky HTTP methods, legacy TLS, missing security headers, cookie flags, permissive CORS and login forms over HTTP. An optional **headless-browser crawl** renders single-page apps so libraries loaded by JavaScript are found too.
 - **Code review**: upload `.zip`/`.tar.gz`. The tool parses npm, PyPI, Maven/Gradle, Composer, RubyGems, Go, NuGet, Dockerfile `FROM`, runtime pins, vendored JS and bundled JARs (via `pom.properties`), and flags risky legacy patterns plus injection-prone code (SQL, OS command, XSS, file paths, SSRF, XXE, open redirects) in Java, Python, PHP, JavaScript/Node, C#/ASP.NET and classic ASP. It **never executes** the code.
-- **AI deep code review** (optional): Claude reads the uploaded source and traces user input to dangerous code. It confirms or dismisses each pattern match and reports what patterns miss (access control, auth, logic), each with the URL and parameter, safe verification steps and containment. It runs through your own Claude Code login, with Mythos if your org has it, or any Claude API connection.
+- **AI review** (optional), for code and web scans:
+  - **Code:** Claude reads the uploaded source and traces user input to dangerous code.
+  - **Web:** Claude goes through every crawled page, script and endpoint like a pentester reading proxy history.
+
+  Either way it confirms or dismisses each automated finding and reports what automation misses. Each issue comes with the URL and parameter, a **manual check (PoC)** (the request to send in Burp Repeater with a harmless probe, and what confirms it) and containment. It runs through your own Claude Code login, with Mythos if your org has it, or any Claude API connection.
+- **Burp Suite Professional** (optional): send the crawl through Burp's proxy so everything lands in its HTTP history and site map, and/or have Burp crawl and audit the same target through its REST API and import its issues into the same results.
 - **Multi-target web scans**: scan every allowlisted host in one go and get one combined report showing which end-of-life components run where.
 - **Recorded traffic (passive)**: upload Burp proxy history (**Save items** XML) or a HAR file to find versions, end-of-life components and header/cookie issues without sending any traffic.
 - **Import other tools' results**: OWASP ZAP, Burp Suite, Semgrep, SARIF (CodeQL, Snyk Code, Checkmarx, SonarQube, Bandit…) and Nuclei. Imported findings get the same containment advice and can be merged into an existing scan for one report.
 - **Containment advice** for every finding: network isolation, WAF/virtual-patch rules, proxy config snippets (nginx/Apache/IIS), hardening, detection, extended-support options, and **manual lab verification steps** for the serious ones.
 - **Optional AI assist**: Claude (Anthropic API) or a local Ollama model gives tailored containment plans and a deeper code review. It's off by default, and by default no source code is sent.
-- **Exports**: HTML, Markdown, CSV, JSON.
+- **Results split by type**: code vulnerabilities or web findings, end-of-life components (one table: version, EOL date, CVEs, where seen), and the attack surface, each with its own tab and summary card. The same split is used in exports (HTML, Markdown, CSV, JSON).
 
 ## Run it
 
@@ -65,8 +70,8 @@ The gateway connection only works with gateways that speak the Anthropic Message
 
 | Mode | What it sends |
 |---|---|
-| Passive | Normal page loads and same-origin JS only. |
-| Safe (default) | Passive, plus about 40 GETs for well-known disclosure files (lockfiles, `.git/HEAD`, `server-status`, phpinfo…) and a random 404 for error-page fingerprinting. |
+| Passive | Normal page loads, same-origin JS, `robots.txt` and sitemaps only. |
+| Safe (default) | Passive, plus OpenAPI/Swagger document discovery, about 40 GETs for well-known disclosure files (lockfiles, `.git/HEAD`, `server-status`, phpinfo…) and a random 404 for error-page fingerprinting. |
 | Active | Safe, plus product version endpoints (Grafana, Jira, GitLab, Solr…), admin/debug consoles (Tomcat manager, actuator, Werkzeug, Ignition…), OPTIONS/TRACE, directory listing and a legacy TLS 1.0/1.1 handshake test. **No exploit payloads.** |
 
 Safe and Active also send two ordinary GETs with a foreign `Origin` header to check CORS. Every mode checks security headers, cookie flags and password forms on the pages it loads.
@@ -75,7 +80,7 @@ Safe and Active also send two ordinary GETs with a foreign `Origin` header to ch
 
 ### What this is and isn't
 
-It covers end-of-life and known-vulnerable components, exposures, configuration weaknesses and pattern-level code issues, with containment advice for each. It does **not** fuzz parameters or test business logic or access control. For those, run OWASP ZAP or Burp (dynamic testing) and Semgrep or CodeQL (data-flow code analysis), then **Import** their results here to get containment advice in the same report. Code-pattern findings show where to look; confirm each one before reporting it.
+It covers end-of-life and known-vulnerable components, exposures, configuration weaknesses and pattern-level code issues, with containment advice for each. The crawl never submits forms, never requests POST targets, and skips logout/delete/reset-style links. It does **not** fuzz parameters itself. For dynamic testing, connect Burp Suite Pro (above) or **Import** ZAP/Burp results. For data-flow code analysis, use Semgrep or CodeQL. The AI review's manual checks are for a person to run by hand in the authorized lab. Code-pattern findings show where to look; confirm each one before reporting it.
 
 Guardrails: every request (and every redirect hop) is checked against the scope allowlist. Scans also have a rate limit, a concurrency cap and a request budget. The operator name, ticket and authorization attestation are recorded per scan. Sensitive responses (`.env`, actuator `/env`) are redacted in evidence.
 

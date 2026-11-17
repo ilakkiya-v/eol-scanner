@@ -50,48 +50,85 @@ def to_markdown(scan: dict, findings: list[dict]) -> str:
     if s.get("imports"):
         lines.append("- Imported: " + ", ".join(f"{i['tool']} ({i['count']} from {i['file']})" for i in s["imports"]))
     lines.append("")
-    for f in _sorted(findings):
-        lines += [f"## [{f['severity'].upper()}] {f['title']}", ""]
-        if f.get("location"):
-            lines.append(f"**Location:** `{f['location']}`  ")
-        if f.get("source_tool") or f.get("cwe"):
-            lines.append(f"**Source:** {f.get('source_tool', 'EOL Scanner')}" + (f"  **CWE:** {', '.join(f['cwe'])}" if f.get("cwe") else "") + "  ")
-        if f.get("detail"):
-            lines.append(f"**Details:** {f['detail']}  ")
-        lc = f.get("lifecycle") or {}
-        if lc.get("status"):
-            lines.append(f"**Lifecycle:** {lc.get('status')} — cycle {lc.get('cycle') or '?'}, EOL {lc.get('eol_date') or lc.get('status')}, latest {lc.get('latest_version') or '-'}  ")
-        if f.get("vulns"):
-            lines.append(f"**Known vulnerabilities ({f.get('vuln_count')}):** " + ", ".join(
-                f"{(v.get('aliases') or [v['id']])[0]} ({v['severity']})" for v in f["vulns"][:15]))
-        if f.get("evidence"):
-            ev = f["evidence"]
-            if isinstance(ev, list):
-                lines += ["", "**Evidence:**"] + [f"- `{e['location']}` — {e['text']}" for e in ev[:5]]
-            else:
-                lines += ["", "**Evidence:**", "```", str(ev)[:800], "```"]
-        if f.get("containment"):
-            lines += ["", "**Containment:**"]
-            for m in f["containment"]:
-                lines.append(f"- **{m['title']}** — {m['detail']}")
-                if m.get("snippet"):
-                    lines += ["  ```", *["  " + l for l in m["snippet"].splitlines()], "  ```"]
-        if len(f.get("locations") or []) > 1:
-            lines += ["", "**All locations:**"] + [f"- `{l.get('path')}:{l.get('line')}` {l.get('code', '')}" for l in f["locations"][:25]]
-        if f.get("tool_solution"):
-            lines += ["", f"**Fix suggested by {f.get('source_tool', 'the tool')} (needs a code change):** {f['tool_solution']}"]
-        if f.get("review_steps"):
-            lines += ["", "**Confirm in the code:**"] + [f"{i}. {t}" for i, t in enumerate(f["review_steps"], 1)]
-        if f.get("manual_tests"):
-            lines += ["", "**Manual verification (authorized lab only):**"] + [f"- {t}" for t in f["manual_tests"]]
-        if f.get("extended_support"):
-            lines += ["", f"**Extended support options:** {f['extended_support']}"]
-        if f.get("ai_advice"):
-            lines += ["", "**AI-assisted analysis:**", "", f["ai_advice"]]
-        lines.append("")
+    comp_cats = {"eol", "eol-soon", "vulnerable-component", "outdated", "version-unknown"}
+    vulns = [f for f in findings if f.get("category") not in comp_cats]
+    comps = [f for f in findings if f.get("category") in comp_cats]
+    vuln_title = {"code": "Code vulnerabilities", "import": "Findings"}.get(scan.get("kind"), "Web findings")
     if s.get("ai_review"):
-        lines += ["## AI-assisted code review", "", s["ai_review"], ""]
+        lines += ["## AI review summary", "", s["ai_review"], ""]
+    for title, group in ((vuln_title, vulns), ("End-of-life and vulnerable components", comps)):
+        if not group:
+            continue
+        lines += [f"## {title} ({len(group)})", ""]
+        for f in _sorted(group):
+            lines += _md_finding(f)
+    eps = s.get("endpoints") or []
+    if eps:
+        lines += [f"## Attack surface ({len(eps)} endpoints)", "", "| Method | URL | Parameters | Found via |", "|---|---|---|---|"]
+        lines += [f"| {e['method']} | `{e['url']}` | {', '.join(e.get('params') or [])} | {', '.join(e.get('sources') or [])} |" for e in eps[:500]]
+        lines.append("")
     return "\n".join(lines)
+
+
+def _md_finding(f: dict) -> list[str]:
+    lines = [f"### [{f['severity'].upper()}] {f['title']}", ""]
+    if f.get("location"):
+        lines.append(f"**Location:** `{f['location']}`  ")
+    if f.get("source_tool") or f.get("cwe"):
+        lines.append(f"**Source:** {f.get('source_tool', 'EOL Scanner')}" + (f"  **CWE:** {', '.join(f['cwe'])}" if f.get("cwe") else "") + "  ")
+    if f.get("ai_verdict"):
+        lines.append(f"**AI review verdict:** {f['ai_verdict'].get('verdict')} — {f['ai_verdict'].get('reason', '')}  ")
+    if f.get("detail"):
+        lines.append(f"**Details:** {f['detail']}  ")
+    ep = f.get("entry_point") or {}
+    if ep.get("path"):
+        lines.append(f"**Reached via:** `{ep.get('method', 'GET')} {ep['path']}`" + (f" parameters: {', '.join(ep.get('params') or [])}" if ep.get("params") else "") + "  ")
+    lc = f.get("lifecycle") or {}
+    if lc.get("status"):
+        lines.append(f"**Lifecycle:** {lc.get('status')} — cycle {lc.get('cycle') or '?'}, EOL {lc.get('eol_date') or lc.get('status')}, latest {lc.get('latest_version') or '-'}  ")
+    if f.get("vulns"):
+        lines.append(f"**Known vulnerabilities ({f.get('vuln_count')}):** " + ", ".join(
+            f"{(v.get('aliases') or [v['id']])[0]} ({v['severity']})" for v in f["vulns"][:15]))
+    mc = f.get("manual_check")
+    if mc:
+        lines += ["", "**Manual check (PoC, benign probe, authorized lab only):**"]
+        if mc.get("request"):
+            lines += ["```http", mc["request"], "```"]
+        if mc.get("probe"):
+            lines.append(f"- Probe: {mc['probe']}")
+        if mc.get("expected"):
+            lines.append(f"- Confirms it: {mc['expected']}")
+        lines += [f"{i}. {t}" for i, t in enumerate(mc.get("steps") or [], 1)]
+    elif f.get("verification_steps"):
+        lines += ["", "**How to verify (AI review):**"] + [f"{i}. {t}" for i, t in enumerate(f["verification_steps"], 1)]
+    if f.get("evidence"):
+        ev = f["evidence"]
+        if isinstance(ev, list):
+            lines += ["", "**Evidence:**"] + [f"- `{e['location']}` — {e['text']}" for e in ev[:5]]
+        else:
+            lines += ["", "**Evidence:**", "```", str(ev)[:800], "```"]
+    if f.get("ai_containment"):
+        lines += ["", "**Containment (AI review):**"] + [f"- {t}" for t in f["ai_containment"]]
+    if f.get("containment"):
+        lines += ["", "**Containment:**"]
+        for m in f["containment"]:
+            lines.append(f"- **{m['title']}** — {m['detail']}")
+            if m.get("snippet"):
+                lines += ["  ```", *["  " + l for l in m["snippet"].splitlines()], "  ```"]
+    if len(f.get("locations") or []) > 1:
+        lines += ["", "**All locations:**"] + [f"- `{l.get('path')}:{l.get('line')}` {l.get('code', '')}" for l in f["locations"][:25]]
+    if f.get("tool_solution"):
+        lines += ["", f"**Fix suggested by {f.get('source_tool', 'the tool')} (needs a code change):** {f['tool_solution']}"]
+    if f.get("review_steps"):
+        lines += ["", "**Confirm in the code:**"] + [f"{i}. {t}" for i, t in enumerate(f["review_steps"], 1)]
+    if f.get("manual_tests"):
+        lines += ["", "**More checks (authorized lab only):**"] + [f"- {t}" for t in f["manual_tests"]]
+    if f.get("extended_support"):
+        lines += ["", f"**Extended support options:** {f['extended_support']}"]
+    if f.get("ai_advice"):
+        lines += ["", "**AI containment plan:**", "", f["ai_advice"]]
+    lines.append("")
+    return lines
 
 
 def to_html(scan: dict, findings: list[dict]) -> str:

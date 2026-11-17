@@ -71,8 +71,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "ollama_url": "http://host.docker.internal:11434", "ollama_model": "llama3.1", "send_code": False},
     "feeds": {"online": True, "osv": True},
     # AI deep review + optional Semgrep. semgrep_config: a registry ruleset (needs internet) or a local rules folder.
-    "code_review": {"semgrep_config": "p/default", "max_turns": 60, "max_input_tokens": 4000000, "timeout_min": 45},
-    "scan_defaults": {"rate_per_sec": 5, "concurrency": 4, "max_pages": 30, "timeout": 10, "verify_tls": False},
+    # web_live_requests: how many live in-scope GETs the AI web review may send (API connections, safe/active scans only)
+    "code_review": {"semgrep_config": "p/default", "max_turns": 60, "max_input_tokens": 4000000, "timeout_min": 45,
+                    "web_live_requests": 40},
+    "scan_defaults": {"rate_per_sec": 5, "concurrency": 4, "max_pages": 150, "timeout": 10, "verify_tls": False},
+    # Burp Suite Professional: proxy listener + REST API (Settings -> Suite -> REST API). Key: BURP_API_KEY env var only.
+    "burp": {"proxy_url": "http://127.0.0.1:8080", "api_url": "http://127.0.0.1:1337", "max_minutes": 120,
+             "scan_configs": {}},
 }
 
 
@@ -167,6 +172,11 @@ def get_findings(sid: str) -> list[dict]:
 def update_finding(fid: str, finding: dict) -> None:
     _exec("UPDATE findings SET data=?, severity=? WHERE id=?",
           (json.dumps(finding), finding.get("severity", "info"), fid))
+
+
+def finding_scan_id(fid: str) -> Optional[str]:
+    row = _exec("SELECT scan_id FROM findings WHERE id=?", (fid,)).fetchone()
+    return row["scan_id"] if row else None
 
 
 def get_finding(fid: str) -> Optional[dict]:

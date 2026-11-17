@@ -69,7 +69,7 @@ The script:
 3. installs the packages;
 4. runs the self-tests.
 
-It ends with 21 `ok` lines and **Done**. If the browser crawl isn't installed, one of those lines says `skip` instead, which is fine.
+It ends with 26 `ok` lines and **Done**. If the browser crawl isn't installed, one of those lines says `skip` instead, which is fine.
 
 Optional extras:
 

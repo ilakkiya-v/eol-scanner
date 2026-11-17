@@ -63,6 +63,9 @@ class WebScanIn(BaseModel):
     verify_tls: Optional[bool] = None
     use_proxy: Optional[bool] = None
     render_js: Optional[bool] = None
+    burp_proxy: Optional[bool] = None   # send the crawl through Burp's proxy listener
+    burp_scan: Optional[bool] = None    # ask Burp Suite Pro (REST API) to crawl + audit the target too
+    ai_review: Optional[bool] = None    # start the AI web review when the scan finishes
 
 
 class ScopeIn(BaseModel):
@@ -75,6 +78,7 @@ class SettingsIn(BaseModel):
     feeds: Optional[dict[str, Any]] = None
     scan_defaults: Optional[dict[str, Any]] = None
     code_review: Optional[dict[str, Any]] = None
+    burp: Optional[dict[str, Any]] = None
 
 
 class AdviceIn(BaseModel):
@@ -154,7 +158,15 @@ def capabilities():
     from .advisor import claude_code
     from .scanners import semgrep_runner
     return {"browser": browser.available(), "semgrep": semgrep_runner.available(),
-            "claude_code": claude_code.find_cli(db.get_setting("llm")) is not None, "ai": llm.status()}
+            "claude_code": claude_code.find_cli(db.get_setting("llm")) is not None, "ai": llm.status(),
+            "burp_key_set": bool(os.environ.get("BURP_API_KEY"))}
+
+
+@app.post("/api/burp/test", dependencies=[Depends(auth)])
+def burp_test(body: Optional[dict[str, Any]] = None):
+    """Check that Burp Suite Pro's REST API answers, with the given (unsaved) or saved settings. Starts nothing."""
+    from .scanners import burp
+    return burp.test({**db.get_setting("burp"), **{k: v for k, v in (body or {}).items() if k in ("api_url",)}})
 
 
 class BatchIn(WebScanIn):
@@ -262,21 +274,39 @@ def ai_advise(fid: str, body: AdviceIn):
     return {"advice": f["ai_advice"]}
 
 
+@app.post("/api/findings/{fid}/manual-check", dependencies=[Depends(auth)])
+def ai_manual_check(fid: str):
+    """Ask Claude for a hand-run manual check (benign-probe PoC) for one finding. Code is only sent if allowed."""
+    f = db.get_finding(fid)
+    if not f:
+        raise HTTPException(404)
+    try:
+        f["manual_check"] = llm.manual_check_for(f)
+    except llm.LLMUnavailable as e:
+        raise HTTPException(503, str(e))
+    db.update_finding(fid, f)
+    return {"manual_check": f["manual_check"]}
+
+
 @app.post("/api/scans/{sid}/ai-review", dependencies=[Depends(auth)])
 def ai_review(sid: str):
-    """Start the AI deep review of a code scan (runs in the background; poll the scan for ai_review_status)."""
+    """Start the AI review of a code or web scan (runs in the background; poll the scan for ai_review_status)."""
     s = db.get_scan(sid)
-    if not s or s["kind"] != "code":
-        raise HTTPException(404, "code scan not found")
+    if not s or s["kind"] not in ("code", "web"):
+        raise HTTPException(404, "code or web scan not found")
+    if s["status"] in ("queued", "running"):
+        raise HTTPException(409, "wait for the scan to finish first")
     st = (s.get("summary") or {}).get("ai_review_status") or {}
     if st.get("state") in ("queued", "running"):
         raise HTTPException(409, "an AI review is already running for this scan")
-    if not (s.get("summary") or {}).get("source_dir"):
+    if s["kind"] == "code" and not (s.get("summary") or {}).get("source_dir"):
         raise HTTPException(400, "the source for this scan was not kept or was deleted; upload the archive again")
+    if s["kind"] == "web" and not (s.get("summary") or {}).get("snapshot_dir"):
+        raise HTTPException(400, "this scan has no saved crawl data (made before this feature, or deleted); re-scan the target")
     if not llm.status()["enabled"] or db.get_setting("llm").get("provider") != "anthropic":
         raise HTTPException(400, "connect Claude first: Settings -> AI assist")
     if not db.get_setting("llm").get("send_code"):
-        raise HTTPException(400, "allow sending source code to your Claude connection first: Settings -> AI assist")
+        raise HTTPException(400, "allow sending source code and crawled pages to your Claude connection first: Settings -> AI assist")
     jobs.start_ai_review(sid)
     return {"started": True}
 

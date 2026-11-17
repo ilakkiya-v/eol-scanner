@@ -17,14 +17,14 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Callable, Optional
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 from bs4 import BeautifulSoup
 
 from .. import scope
 from ..config import USER_AGENT
-from . import browser, manifests, probes
+from . import browser, discovery as d, manifests, probes
 from .fingerprints import Component, match_headers, match_html, match_js, match_js_url
 
 
@@ -37,16 +37,41 @@ class WebScanResult:
     requests: int = 0
     tls: dict = field(default_factory=dict)
     api_endpoints: list[str] = field(default_factory=list)
+    endpoints: list[dict] = field(default_factory=list)   # method, url, params, sources, status, ... (attack surface)
+    page_info: list[dict] = field(default_factory=list)   # url, status, type, title, size
 
 
-def _origin(url: str) -> str:
-    p = urlsplit(url)
-    return f"{p.scheme}://{p.netloc}".lower()
+_REDACT = re.compile(r"^(set-cookie|cookie|authorization|proxy-authorization|x-api-key|x-auth-token)$", re.I)
 
 
-def _strip_fragment(url: str) -> str:
-    p = urlsplit(url)
-    return urlunsplit((p.scheme, p.netloc, p.path or "/", p.query, ""))
+class Snapshot:
+    """Saves crawled responses (headers + body, secrets redacted) for the AI web review. Disabled without a folder."""
+
+    def __init__(self, folder: Optional[str], max_bytes: int = 60_000_000, max_files: int = 600):
+        self.dir = folder
+        self.left, self.files_left = max_bytes, max_files
+        self.index: list[dict] = []
+        self._seen: set[str] = set()
+
+    def save(self, kind: str, url: str, r: httpx.Response) -> None:
+        if not self.dir or url in self._seen or self.files_left <= 0 or self.left <= 0:
+            return
+        self._seen.add(url)
+        body = (r.content or b"")[:400_000]
+        heads = []
+        for k, v in r.headers.multi_items():
+            if _REDACT.match(k):
+                v = v.split("=", 1)[0] + "=<redacted>" if k.lower() == "set-cookie" else "<redacted>"
+            heads.append(f"{k}: {v}")
+        name = f"{kind}s/{len(self.index) + 1:04d}.txt"
+        text = f"URL: {url}\nSTATUS: {r.status_code}\n" + "\n".join(heads) + "\n\n" + body.decode("utf-8", "ignore")
+        path = os.path.join(self.dir, name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        self.left -= len(text)
+        self.files_left -= 1
+        self.index.append({"file": name, "url": url, "status": r.status_code, "type": r.headers.get("content-type", "")})
 
 
 class WebScanner:
@@ -66,6 +91,9 @@ class WebScanner:
         self._pages_seen: list[tuple[str, httpx.Headers]] = []  # (url, headers) of crawled HTML pages
         self._cookies: dict[str, tuple[str, str]] = {}          # cookie name -> (Set-Cookie value, url)
         self._cleartext_forms: list[str] = []
+        self._comments: list[str] = []
+        self.endpoints = d.EndpointMap()
+        self.snap = Snapshot(options.get("snapshot_dir"))
 
     # ------------------------------------------------------------ transport
     async def _request(self, method: str, url: str, max_bytes: int = 3_000_000,
@@ -148,62 +176,185 @@ class WebScanner:
         return False
 
     # ------------------------------------------------------------ crawl
-    async def _crawl(self) -> None:
-        start = _strip_fragment(self.target)
-        origin = _origin(start)
-        queue, seen, scripts_seen = [start], {start}, set()
-        max_pages = int(self.opt.get("max_pages", 30))
-        script_jobs = []
-        while queue and len(self.res.pages) < max_pages and not self.cancelled():
-            url = queue.pop(0)
-            r = await self._request("GET", url)
-            if r is None:
-                continue
-            self.res.pages.append(str(r.url))
-            self._add(match_headers(r.headers.multi_items(), str(r.url)))
-            self._observe_cookies(r)
-            ctype = r.headers.get("content-type", "")
-            if "html" not in ctype and not (r.content or b"").lstrip()[:15].lower().startswith((b"<!doctype", b"<html")):
-                continue
-            html = (r.content or b"").decode("utf-8", "ignore")
-            self._add(match_html(html, str(r.url)))
-            self._pages_seen.append((str(r.url), r.headers))
-            soup = BeautifulSoup(html, "html.parser")
-            self._check_forms(soup, str(r.url))
-            for s in soup.find_all("script"):
-                src = s.get("src")
-                if src:
-                    full = _strip_fragment(urljoin(str(r.url), src))
-                    if full in scripts_seen:
-                        continue
-                    scripts_seen.add(full)
-                    self.res.scripts.append(full)
-                    self._add(match_js_url(full))
-                    if _origin(full) == origin or scope.in_scope(full, self.rules):
-                        script_jobs.append(full)
-                elif s.string:
-                    self._add(match_js(s.string, "", f"{r.url} (inline script)"))
-            for l in soup.find_all("link", href=True):
-                full = _strip_fragment(urljoin(str(r.url), l["href"]))
-                if full.endswith(".css") or "stylesheet" in (l.get("rel") or []):
-                    self._add(match_js_url(full))  # bootstrap/font-awesome versions in CSS URLs
-            for a in soup.find_all("a", href=True):
-                full = _strip_fragment(urljoin(str(r.url), a["href"]))
-                if _origin(full) == origin and full not in seen and not re.search(
-                        r"\.(?:png|jpe?g|gif|svg|ico|pdf|zip|gz|mp4|woff2?|ttf|css|js)(?:\?|$)|logout|signout|delete|remove", full, re.I):
-                    seen.add(full)
-                    queue.append(full)
-            self.progress(0.05 + 0.35 * len(self.res.pages) / max_pages, f"crawled {len(self.res.pages)} pages")
+    def _enqueue(self, url: str, source: str, depth: int) -> None:
+        """Record a same-origin URL as an endpoint and queue it for crawling unless it is static, unsafe, or a repeat."""
+        url = d.strip_fragment(url)
+        if not url.startswith(("http://", "https://")) or d.origin(url) != self._org or d.STATIC.search(url):
+            return
+        if d.SCRIPT.search(url):
+            self._queue_script(url)
+            return
+        unsafe = bool(d.UNSAFE_LINK.search(url))
+        self.endpoints.add("GET", url, source=source, **({"not_followed": "state-changing name"} if unsafe else {}))
+        if unsafe or url in self._seen or "{x}" in url or depth > self._max_depth:
+            return
+        k = d.pattern_key(url)
+        if self._patterns.get(k, 0) >= self._per_pattern:
+            return
+        self._patterns[k] = self._patterns.get(k, 0) + 1
+        self._seen.add(url)
+        self._queue.append((url, depth))
 
-        max_scripts = int(self.opt.get("max_scripts", 80))
+    def _queue_script(self, full: str) -> None:
+        if full in self._scripts_seen:
+            return
+        self._scripts_seen.add(full)
+        self.res.scripts.append(full)
+        self._add(match_js_url(full))
+        if d.origin(full) == self._org or scope.in_scope(full, self.rules):
+            self._script_jobs.append(full)
 
-        async def fetch_script(u: str) -> None:
+    async def _seed(self) -> None:
+        """robots.txt and sitemaps (all modes: they are published for crawlers), OpenAPI documents (safe/active)."""
+        r = await self._request("GET", urljoin(self.target, "/robots.txt"))
+        sitemaps = [urljoin(self.target, "/sitemap.xml")]
+        if r is not None and r.status_code == 200 and "html" not in r.headers.get("content-type", ""):
+            paths, sm = d.parse_robots((r.content or b"").decode("utf-8", "ignore"))
+            self.snap.save("robots", str(r.url), r)
+            for p in paths[:300]:
+                self._enqueue(urljoin(self.target, p), "robots.txt", 1)
+            sitemaps = sm[:5] + sitemaps
+            if paths:
+                self.log(f"robots.txt lists {len(paths)} paths")
+        done, tried = 0, set()
+        while sitemaps and done < 6 and not self.cancelled():
+            u = sitemaps.pop(0)
+            if d.origin(u) != self._org or u in tried:
+                continue
+            tried.add(u)
+            done += 1
             r = await self._request("GET", u)
-            if r is not None and r.status_code == 200:
-                self._add(match_js((r.content or b"").decode("utf-8", "ignore"), urlsplit(u).path, u))
+            if r is None or r.status_code != 200 or b"<loc>" not in (r.content or b"")[:200_000].lower():
+                continue
+            pages, children = d.parse_sitemap((r.content or b"").decode("utf-8", "ignore"))
+            sitemaps += children
+            for p in pages[:1000]:
+                self._enqueue(p, "sitemap", 1)
+            self.log(f"sitemap {u}: {len(pages)} URLs")
+        if self.mode == "passive":
+            return
+        for path in d.OPENAPI_PATHS:
+            if self.cancelled():
+                return
+            r = await self._request("GET", urljoin(self.target, path))
+            if r is None or r.status_code != 200:
+                continue
+            eps = d.parse_openapi((r.content or b"").decode("utf-8", "ignore"), self.target)
+            if eps:
+                self.snap.save("api-doc", str(r.url), r)
+                for e in eps:
+                    self.endpoints.add(e["method"], e["url"], e["params"], "openapi", auth=e["auth"])
+                    if e["method"] == "GET" and "{" not in e["url"]:
+                        self._enqueue(e["url"], "openapi", 1)
+                self._finding(category="exposure", severity="low", title=f"API description published ({len(eps)} operations)",
+                              kb="api-docs", location=str(r.url), evidence=f"{len(eps)} operations listed in {path}")
+                self.log(f"OpenAPI document {path}: {len(eps)} operations")
+                break
 
-        await asyncio.gather(*(fetch_script(u) for u in script_jobs[:max_scripts]))
-        self.log(f"crawl done: {len(self.res.pages)} pages, {len(self.res.scripts)} scripts")
+    async def _visit(self, url: str, depth: int) -> None:
+        r = await self._request("GET", url)
+        if r is None:
+            return
+        final = str(r.url)
+        ctype = r.headers.get("content-type", "").split(";")[0].strip().lower()
+        body = r.content or b""
+        self.res.pages.append(final)
+        self._add(match_headers(r.headers.multi_items(), final))
+        self._observe_cookies(r)
+        is_html = "html" in ctype or body.lstrip()[:15].lower().startswith((b"<!doctype", b"<html"))
+        title = ""
+        if is_html:
+            html = body.decode("utf-8", "ignore")
+            soup = BeautifulSoup(html, "html.parser")
+            title = (soup.title.string or "").strip()[:120] if soup.title and soup.title.string else ""
+        self.endpoints.add("GET", url, source="crawl", status=r.status_code, type=ctype or "?", title=title, size=len(body))
+        self.res.page_info.append({"url": final, "status": r.status_code, "type": ctype, "title": title, "size": len(body)})
+        self.snap.save("page", final, r)
+        if not is_html:
+            if "javascript" in ctype:
+                self._add(match_js(body.decode("utf-8", "ignore"), urlsplit(final).path, final))
+            return
+        self._add(match_html(html, final))
+        self._pages_seen.append((final, r.headers))
+        self._check_forms(soup, final)
+        for f in d.html_forms(soup, final):
+            if d.origin(f["action"]) != self._org:
+                continue
+            self.endpoints.add(f["method"], f["action"], f["params"], "form", login=f["has_password"], upload=f["has_file"],
+                               csrf_token=f["csrf_token"] if f["method"] == "POST" else None)
+            if f["method"] == "GET" and not f["has_password"]:
+                self._enqueue(f["action"].split("?")[0], "form", depth + 1)  # a search-style page; the form is never submitted
+        for s in soup.find_all("script"):
+            src = s.get("src")
+            if src:
+                self._queue_script(d.strip_fragment(urljoin(final, src)))
+            elif s.string:
+                self._add(match_js(s.string, "", f"{final} (inline script)"))
+                for p in d.js_endpoints(s.string):
+                    self._enqueue(urljoin(final, p), "inline-js", depth + 1)
+        for l in soup.find_all("link", href=True):
+            full = d.strip_fragment(urljoin(final, l["href"]))
+            if full.endswith(".css") or "stylesheet" in (l.get("rel") or []):
+                self._add(match_js_url(full))  # bootstrap/font-awesome versions in CSS URLs
+        for link in d.html_links(soup, final):
+            self._enqueue(link, "link", depth + 1)
+        for c in d.html_comments(html):
+            if len(self._comments) < 40 and c not in self._comments:
+                self._comments.append(f"{final}: {c[:300]}")
+
+    async def _drain(self, max_pages: int) -> None:
+        conc = max(1, int(self.opt.get("concurrency", 4)))
+        while self._queue and len(self.res.pages) < max_pages and not self.cancelled():
+            batch = []
+            while self._queue and len(batch) < min(conc, max_pages - len(self.res.pages)):
+                batch.append(self._queue.pop(0))
+            await asyncio.gather(*(self._visit(u, dep) for u, dep in batch))
+            self.progress(0.05 + 0.35 * min(1.0, len(self.res.pages) / max_pages),
+                          f"crawled {len(self.res.pages)} pages, {len(self.endpoints)} endpoints")
+
+    async def _crawl(self) -> None:
+        start = d.strip_fragment(self.target)
+        self._org = d.origin(start)
+        self._queue, self._seen, self._patterns = [], set(), {}
+        self._scripts_seen, self._script_jobs = set(), []
+        self._per_pattern = int(self.opt.get("per_pattern", 3))
+        self._max_depth = int(self.opt.get("max_depth", 8))
+        max_pages = int(self.opt.get("max_pages", 150))
+        self._seen.add(start)
+        self._queue.append((start, 0))
+        self._patterns[d.pattern_key(start)] = 1
+        await self._seed()
+        await self._drain(max_pages)
+
+        # Scripts: library versions, and the endpoints they call (single-page apps keep their routes and API there).
+        max_scripts = int(self.opt.get("max_scripts", 80))
+        fetched = 0
+        while self._script_jobs and fetched < max_scripts and not self.cancelled():
+            jobs_now = self._script_jobs[: max_scripts - fetched]
+            self._script_jobs = self._script_jobs[len(jobs_now):]
+            fetched += len(jobs_now)
+
+            async def fetch_script(u: str) -> None:
+                r = await self._request("GET", u)
+                if r is None or r.status_code != 200:
+                    return
+                text = (r.content or b"").decode("utf-8", "ignore")
+                self._add(match_js(text, urlsplit(u).path, u))
+                if d.origin(u) == self._org:
+                    self.snap.save("script", u, r)
+                for p in d.js_endpoints(text):
+                    self._enqueue(urljoin(u, p), "script", 2)
+
+            await asyncio.gather(*(fetch_script(u) for u in jobs_now))
+        # Second pass: pages and endpoints only referenced from JavaScript.
+        await self._drain(max_pages)
+        if self._comments:
+            self._finding(category="info", severity="info", title=f"Developer comments in HTML ({len(self._comments)})",
+                          kb="html-comments", location=self.target, evidence="\n".join(self._comments[:25]))
+        self.res.endpoints = self.endpoints.to_list()
+        self.log(f"crawl done: {len(self.res.pages)} pages, {len(self.res.scripts)} scripts, {len(self.endpoints)} endpoints"
+                 f" ({sum(1 for e in self.res.endpoints if e['method'] != 'GET')} non-GET, "
+                 f"{sum(1 for e in self.res.endpoints if e['params'])} with parameters)")
 
     # ------------------------------------------------------------ probes
     async def _run_probe(self, p: dict) -> None:
@@ -283,7 +434,7 @@ class WebScanner:
     async def _dir_listing(self) -> None:
         dirs = set()
         for s in self.res.scripts:
-            if _origin(s) == _origin(self.target):
+            if d.origin(s) == d.origin(self.target):
                 path = urlsplit(s).path.rsplit("/", 1)[0] + "/"
                 if path != "/":
                     dirs.add(urljoin(self.target, path))
@@ -501,8 +652,12 @@ class WebScanner:
         headers.update(self.opt.get("headers") or {})
         if self.opt.get("cookies"):
             headers["Cookie"] = self.opt["cookies"]
-        async with httpx.AsyncClient(verify=bool(self.opt.get("verify_tls", False)), timeout=float(self.opt.get("timeout", 10)),
-                                     headers=headers, follow_redirects=False, trust_env=bool(self.opt.get("use_proxy", False))) as c:
+        proxy = self.opt.get("proxy_url") or None
+        if proxy:
+            self.log(f"sending traffic through {proxy} (it appears in that proxy's history / site map)")
+        async with httpx.AsyncClient(verify=bool(self.opt.get("verify_tls", False)) and not proxy, timeout=float(self.opt.get("timeout", 10)),
+                                     headers=headers, follow_redirects=False, proxy=proxy,
+                                     trust_env=bool(self.opt.get("use_proxy", False)) and not proxy) as c:
             self.client = c
             self.progress(0.02, "checking reachability")
             r = await self._request("GET", self.target)
@@ -510,7 +665,8 @@ class WebScanner:
                 self.target = "http://" + self.target[len("https://"):]
                 r = await self._request("GET", self.target)
             if r is None:
-                raise RuntimeError(f"target not reachable or out of scope: {self.target}")
+                hint = " (is Burp running with its proxy listener on that address?)" if proxy else ""
+                raise RuntimeError(f"target not reachable or out of scope: {self.target}{hint}")
             await self._baseline()
             await self._crawl()
             if self.opt.get("render_js") and not self.cancelled():

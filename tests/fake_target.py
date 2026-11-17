@@ -15,14 +15,21 @@ INDEX = """<!doctype html><html><head><title>Legacy QA App</title>
 <script src="/static/js/jquery.min.js"></script>
 <script src="/static/vendor/angular.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.18.1/moment.min.js"></script>
-</head><body ng-app><a href="/about">About</a><a href="/login">Login</a><a href="/app">Dashboard (SPA)</a><a href="/logout">Logout</a></body></html>"""
+</head><body ng-app><!-- TODO remove test user before go-live: qa_admin --><a href="/about">About</a><a href="/login">Login</a><a href="/app">Dashboard (SPA)</a><a href="/logout">Logout</a></body></html>"""
 LOGIN = """<html><body><form method="post" action="/login"><input name="user"><input type="password" name="pass"><button>Sign in</button></form></body></html>"""
 # A single-page app shell: the library is only loaded by JavaScript, so a plain HTTP crawl can't see it.
 SPA = """<!doctype html><html><head><title>Dashboard</title></head><body><div id="root">Loading…</div>
 <script>var s=document.createElement('script');s.src='/static/app/'+'bundle-'+'7f3a.js';document.head.appendChild(s);
 fetch('/api/v1/widgets').then(function(){});</script></body></html>"""
 # Fake library build with no banner comment; only its runtime global reveals the version.
-BUNDLE = "window.Vue={version:'2.5.17'};window.Handlebars={VERSION:'4.0.11'};document.getElementById('root').textContent='ready';"
+BUNDLE = ("window.Vue={version:'2.5.17'};window.Handlebars={VERSION:'4.0.11'};document.getElementById('root').textContent='ready';"
+          "axios.get('/api/v1/orders?status=open');var r={url:'/reports/export.do'};fetch(`/api/v1/users/${id}/profile`);")
+ROBOTS = "User-agent: *\nDisallow: /admin/\nDisallow: /private/*.bak\nSitemap: http://127.0.0.1:8899/sitemap.xml\n"
+SITEMAP = ("<?xml version='1.0'?><urlset>" + "".join(f"<url><loc>http://127.0.0.1:8899/products/{i}</loc></url>" for i in range(1, 21))
+           + "<url><loc>http://127.0.0.1:8899/search?q=lamp</loc></url></urlset>")
+OPENAPI = ('{"swagger":"2.0","basePath":"/api/v1","paths":{"/users/{id}":{"get":{"parameters":[{"name":"id","in":"path"}]},'
+           '"delete":{"parameters":[{"name":"id","in":"path"}]}},"/search":{"get":{"parameters":[{"name":"q","in":"query"},'
+           '{"name":"sort","in":"query"}]}}}}')
 
 FILES = {
     "/": ("text/html", INDEX),
@@ -31,6 +38,12 @@ FILES = {
     "/app": ("text/html", SPA),
     "/static/app/bundle-7f3a.js": ("application/javascript", BUNDLE),
     "/api/v1/widgets": ("application/json", "[]"),
+    "/api/v1/orders": ("application/json", "[]"),
+    "/reports/export.do": ("text/html", "<html><body>Export <a href='/products/1'>first</a></body></html>"),
+    "/robots.txt": ("text/plain", ROBOTS),
+    "/sitemap.xml": ("application/xml", SITEMAP),
+    "/v2/api-docs": ("application/json", OPENAPI),
+    "/admin/": ("text/html", "<html><title>Admin</title><body>Admin console <form action='/admin/users' method='post'><input name='role'></form></body></html>"),
     "/static/js/jquery.min.js": ("application/javascript", JQ),
     "/static/vendor/angular.js": ("application/javascript", NG),
     "/package.json": ("application/json", '{"name":"legacy","dependencies":{"lodash":"4.17.4","express":"4.15.2"}}'),
@@ -51,9 +64,16 @@ class H(BaseHTTPRequestHandler):
         if path in FILES:
             ctype, body = FILES[path]
             code = 200
+        elif path.startswith("/products/") and path[10:].isdigit():
+            ctype, body, code = "text/html", f"<html><title>Product {path[10:]}</title><body><a href='/products/{int(path[10:]) + 1}'>next</a></body></html>", 200
+        elif path == "/search":  # echoes the query (encoded) like a typical search page
+            import html as _h
+            from urllib.parse import parse_qs, urlsplit as _us
+            q = (parse_qs(_us(self.path).query).get("q") or [""])[0]
+            ctype, body, code = "text/html", f"<html><title>Search</title><body>Results for {_h.escape(q)}</body></html>", 200
         else:
             ctype, body, code = "text/html", "<html><body><h1>Not Found</h1><address>Apache/2.2.15 (CentOS) Server at qa Port 80</address></body></html>", 404
-        data = body.encode()
+        data = body.replace("http://127.0.0.1:8899", f"http://{self.headers.get('Host', '127.0.0.1:8899')}").encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("X-Powered-By", "PHP/5.6.40")

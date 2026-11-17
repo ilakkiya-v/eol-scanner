@@ -149,33 +149,73 @@ Then go to **Settings → AI assist**, pick the connection, **Save**, and **Test
 3. The automatic scan finishes in seconds to minutes. It finds:
    - **Outdated components:** every dependency and runtime (npm, Maven/Gradle, PyPI, NuGet, Composer, RubyGems, Go, Dockerfile base images, bundled JARs), with end-of-life dates and known CVEs.
    - **Risky code:** about 54 rules (SQL and command injection, XSS, file inclusion and path traversal, SSRF, XXE, open redirects, unsafe deserialization, hardcoded secrets, weak crypto, debug settings). Each is mapped to the **URL and parameter** that reaches it where possible.
-4. The **AI deep review** (tab "AI deep review ✦", or the button at the top of the scan) runs in the background. Large codebases can take 10–40 minutes; watch progress in the **Log** tab. Claude:
+4. The **AI review** (tab "AI review ✦", or the button at the top of the scan) runs in the background. Large codebases can take 10–40 minutes; watch progress in the **Log** tab. Claude:
    - finds the entry points and traces user input through the code;
    - gives each pattern match a verdict: *confirmed*, *likely false positive* or *needs runtime check*;
    - looks for what patterns miss: access control, authentication, logic flaws, deserialization, file handling.
 
-   Each confirmed vulnerability appears in **Findings** with the Claude badge.
-5. Every code finding shows:
+   Each confirmed vulnerability appears in **Code vulnerabilities** with the Claude badge.
+5. Results are split into tabs, with a summary card for each at the top:
+   - **Code vulnerabilities**: injection and other code flaws.
+   - **EOL & components**: a table of every end-of-life or vulnerable dependency (version, end-of-life date, CVE count, where it was found), then details and containment for each.
+   - **All components**: the full inventory.
+6. Every code vulnerability shows:
    - **Reached via**: the HTTP method, path and parameter.
+   - **Manual check (PoC)**: the HTTP request to send (copy it into Burp Repeater), a harmless probe value, and what in the response confirms the issue. The AI review writes one for each issue it reports. For any other finding, press **Write a manual check (PoC) with AI**. Probes are deliberately benign (a marker string, a quote character, two equivalent numbers, another test record's id): they show the flaw exists without extracting data or changing anything.
    - **Confirm in the code**: a checklist to tell real issues from false alarms.
-   - **How to verify safely**: non-destructive checks for the authorized lab.
    - **Containment (no code change needed)**: WAF/proxy rules with copyable nginx/Apache/IIS snippets, isolation, least privilege, monitoring.
-6. Export with **HTML / Markdown / CSV / JSON** at the top of the scan.
+7. **Export** (top right) gives HTML, Markdown, CSV or JSON. The reports follow the same split: vulnerabilities, then end-of-life components, then the attack surface.
 
 The extracted source is kept so the AI review can read it. **Delete kept source** (on the AI tab) or deleting the scan removes it.
 
 ### Feature 2: Web crawl of your allowlisted hosts
 
-1. Open **Web scan** and enter one target, or several (one per line). **Use all allowlisted hosts** fills in every exact host from your scope.
-2. Pick a depth:
-   - **Passive:** page loads only.
-   - **Safe:** adds about 40 checks for well-known files.
+1. Open **Web scan**. The form has four steps.
+2. **Target:** one URL, or several (one per line). **Use all allowlisted hosts** fills in every exact host from your scope.
+3. **How deep:**
+   - **Passive:** page loads, `robots.txt` and sitemaps only.
+   - **Safe:** adds API documents (OpenAPI/Swagger), about 40 checks for well-known files, and a CORS check.
    - **Active:** adds version endpoints, admin consoles, HTTP methods and legacy TLS.
 
-   None of them sends exploit payloads.
-3. Optional, under **Advanced**: auth headers or cookies (never stored), and **Render pages in a headless browser** for single-page apps.
-4. Each target gets its own scan. For several targets, the Dashboard shows **Multi-target scans** with a **Combined HTML / CSV / Markdown** report. It includes a table of which end-of-life components run on which hosts.
-5. Every finding comes with containment for code that won't change: isolation, WAF virtual patches, proxy snippets, header and cookie fixes at the proxy, monitoring, extended-support options, and manual lab checks for the serious ones.
+   None of them sends exploit payloads. **Max pages** defaults to 150. Tick **Also render pages in a headless browser** for single-page apps.
+4. **Extra engines** (optional): Burp Suite (see below) and **AI web review when the scan finishes**.
+5. **Authorization:** your name and ticket. Under **Advanced** you can add a session cookie or auth header for a logged-in crawl. Log in with a test account, then copy the cookie from Burp or the browser. It is never stored.
+
+**What the crawl finds.** It follows every link, frame and meta refresh, and reads `robots.txt`, sitemaps and OpenAPI/Swagger documents. It pulls endpoint paths out of JavaScript (fetch/axios/jQuery calls and `/api/...` strings) and records every form with its fields. It does not follow logout, delete, reset or similar links, and it never submits forms or requests POST targets. Pages that differ only by an id (`/item/1`, `/item/2`, …) are visited a few times, not hundreds.
+
+**Results** are split like the code review:
+- **Web findings:** exposures, misconfigurations, Burp issues and AI review findings.
+- **EOL & components:** end-of-life and vulnerable components, with containment.
+- **Attack surface:** every endpoint with its method, parameters and where it was found. It flags login forms, file uploads and POST forms without an anti-CSRF token. **Copy URLs** gives a list to paste into Burp.
+
+For several targets, the Dashboard shows **Multi-target scans** with a **Combined HTML / CSV / Markdown** report, including a table of which end-of-life components run on which hosts.
+
+**AI web review** (button **AI review ✦** on the scan, or tick it before scanning). Claude goes through every crawled page, script and endpoint, like a pentester reading proxy history. It:
+- maps login, roles and sensitive functions;
+- gives each finding a verdict;
+- looks for what automated checks miss: reflected input, verbose errors, IDOR candidates, open redirects, SSRF-style URL parameters, forms without anti-CSRF tokens, secrets in scripts, exposed admin functions;
+- says where each end-of-life component is exposed.
+
+Every issue it reports comes with a **manual check (PoC)** and containment. With an API connection (not Claude Code), it may also send a limited number of live in-scope GET requests (default 40; Settings → Code review) to confirm what it sees, in Safe and Active scans only. The crawled pages are saved, with cookie and authorization values redacted, so the review can read them. Deleting the scan, or **Delete saved crawl data** on the AI tab, removes them.
+
+#### Using your Burp Suite Professional licence
+
+Two independent options in step 3 of the web scan form:
+
+- **Send the crawl through Burp:** the scanner sends all its traffic through Burp's proxy listener (Settings → Burp Suite → *Proxy listener*, default `http://127.0.0.1:8080`). Every page, script and API call then appears in Burp's **HTTP history** and **site map**, ready for Repeater and Intruder. Burp just needs to be running with its normal proxy listener.
+- **Run a Burp Suite Pro scan too:** after the crawl, the scanner asks Burp (through its REST API) to crawl and audit the same target, then imports Burp's issues into **Web findings**. Burp's scope is set to that host only, and logout-style URLs are excluded. Setup, once:
+  1. In Burp: **Settings → Suite → REST API → tick "Service running"** (default `http://127.0.0.1:1337`).
+  2. If you create an API key there, set it before starting the scanner (it is never stored):
+     - Windows: `$env:BURP_API_KEY = "..."`
+     - Mac: `export BURP_API_KEY=...`
+  3. In the scanner: **Settings → Burp Suite Professional → Test connection**.
+
+  The Burp scan configuration follows the scan depth:
+  - Passive: *Audit checks - passive*
+  - Safe: *Audit checks - light active*
+  - Active: *Audit checks - all except time-based detection methods*
+
+  You can change these per depth in Settings. Burp scans can take a long time; the scanner waits up to 120 minutes (configurable), then imports what Burp found so far. The task keeps running in Burp's Dashboard. Only Burp Suite **Professional** has this REST API.
 
 ### Feature 3: Versions in use, plus Burp and other tools
 
@@ -196,15 +236,16 @@ These checks use only your laptop: no VPN, no lab, no Claude needed.
    - Windows: `.venv\Scripts\python tests\test_core.py`
    - Mac/Linux: `.venv/bin/python tests/test_core.py`
 
-   You should see 21 lines starting with `ok`. A `skip` line is fine for an optional extra you didn't install.
+   You should see 26 lines starting with `ok`. A `skip` line is fine for an optional extra you didn't install.
 2. **Fake legacy web app.** In a second terminal, run `.venv/bin/python tests/fake_target.py 8899` (Windows: `.venv\Scripts\python tests\fake_target.py 8899`). Then:
    - add `127.0.0.1` to the scope;
    - start a **Web scan** of `http://127.0.0.1:8899` in **Active** mode.
 
-   Expect about 24 findings: Apache 2.2, PHP 5.6, AngularJS 1.5, jQuery 1.12, an exposed `.git` folder, CORS trusting any site, missing headers, a login form over HTTP, and more.
+   Expect about 25 findings: Apache 2.2, PHP 5.6, AngularJS 1.5, jQuery 1.12, an exposed `.git` folder, CORS trusting any site, missing headers, a login form over HTTP, an API description, and more. The **Attack surface** tab should list about 15 endpoints, found from links, `robots.txt`, the sitemap, the OpenAPI document and forms.
 3. **Code review:** upload `tests/fixtures/legacyapp.zip`. Expect about 42 findings, including log4j 2.14.1, Struts 2.3 and Django 1.11, plus SQL injection, command injection and XSS in the sample PHP, Java, Node, Python and C# files, each with its URL and parameter.
 4. **Burp / HAR:** in **Import**, upload `tests/fixtures/imports/burp-items.xml` or `traffic.har`. Expect Apache 2.2, PHP 5.6, jQuery 1.12 and six header/cookie/CORS findings.
-5. **Claude:** in **Settings → AI assist**, click **Test connection**. Then open the code scan from step 3 and run **AI deep review**.
+5. **Claude:** in **Settings → AI assist**, click **Test connection**. Then open the code scan from step 3 and press **AI review ✦**. The web scan from step 2 has the same button.
+6. **Burp (optional):** with Burp Suite Pro running and its REST API on, **Settings → Burp Suite Professional → Test connection** should say *Connected*.
 
 ---
 

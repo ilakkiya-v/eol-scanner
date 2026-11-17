@@ -397,6 +397,218 @@ def test_batch_scope_and_combined_report():
     assert report.combined(scans, {"a": [f], "b": []}, "csv").count("\n") == 2
 
 
+def test_discovery_helpers():
+    from app.scanners import discovery as d
+    js = "axios.get('/api/v1/orders?status=open');var r={url:'/reports/export.do'};fetch(`/api/v1/users/${id}/profile`);x='/img/a.png'"
+    eps = d.js_endpoints(js)
+    assert "/api/v1/orders?status=open" in eps and "/reports/export.do" in eps and "/api/v1/users/{x}/profile" in eps
+    assert not any(e.endswith(".png") for e in eps)
+    paths, maps = d.parse_robots("User-agent: *\nDisallow: /admin/\nDisallow: /a/*.bak\nAllow: /\nSitemap: https://h/s.xml")
+    assert paths == ["/admin/", "/a/"] and maps == ["https://h/s.xml"]
+    assert d.pattern_key("https://h/item/123?b=1&a=2") == d.pattern_key("https://h/item/456?a=9&b=0") == "h/item/{n}?a&b"
+    assert d.UNSAFE_LINK.search("/account/logout") and d.UNSAFE_LINK.search("/user/delete?id=3") and not d.UNSAFE_LINK.search("/products")
+    api = d.parse_openapi('{"openapi":"3.0.0","servers":[{"url":"/api"}],"paths":{"/u/{id}":{"get":{"parameters":[{"name":"id"}]},'
+                          '"post":{"requestBody":{"content":{"application/json":{"schema":{"properties":{"name":{},"role":{}}}}}}}}}}', "https://h/")
+    assert {(e["method"], e["url"]) for e in api} == {("GET", "https://h/api/u/{id}"), ("POST", "https://h/api/u/{id}")}
+    assert next(e for e in api if e["method"] == "POST")["params"] == ["name", "role"]
+
+
+def test_crawl_discovery_and_snapshots():
+    import asyncio
+    from app.scanners.web import WebScanner
+    srv = _serve_fake_target()
+    snap = pathlib.Path(tempfile.mkdtemp()) / "snap"
+    try:
+        base = f"http://127.0.0.1:{srv.server_port}"
+        sc = WebScanner(base, "safe", {"rate_per_sec": 200, "max_pages": 60, "snapshot_dir": str(snap)},
+                        {"allow": ["127.0.0.1"], "deny": []}, lambda m: None, lambda p, m="": None, lambda: False)
+        r = asyncio.run(sc.run())
+    finally:
+        srv.shutdown()
+    eps = {(e["method"], e["url"].replace(base, "")): e for e in r.endpoints}
+    assert "robots.txt" in eps[("GET", "/admin/")]["sources"]                        # from robots.txt
+    assert eps[("GET", "/api/v1/search")]["params"] == ["q", "sort"]                   # from the OpenAPI document
+    assert ("DELETE", "/api/v1/users/{id}") in eps and ("DELETE", "/api/v1/users/{id}") not in [("GET", p) for p in r.pages]
+    assert eps[("POST", "/login")]["params"] == ["user", "pass"] and eps[("POST", "/login")]["login"]
+    assert eps[("POST", "/admin/users")]["csrf_token"] is False                        # POST form without anti-CSRF token
+    assert eps[("GET", "/logout")].get("not_followed")                                 # never requested
+    pages = [p.replace(base, "") for p in r.pages]
+    assert "/logout" not in pages and "/admin/users" not in pages                      # form targets are never fetched
+    assert 1 <= sum(p.startswith("/products/") for p in pages) <= 3                    # id pages collapsed by pattern
+    assert any(f["kb"] == "html-comments" for f in r.findings) and any(f["kb"] == "api-docs" for f in r.findings)
+    saved = list(snap.rglob("*.txt"))
+    assert saved and all("PHPSESSID=abc" not in p.read_text() for p in saved)
+    assert any("PHPSESSID=<redacted>" in p.read_text() for p in saved)
+
+
+def _serve_fake_burp(issue_req: str):
+    import base64
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    calls = []
+
+    class B(BaseHTTPRequestHandler):
+        def _json(self, code, obj, extra=None):
+            data = json.dumps(obj).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            calls.append(("POST", self.path, body))
+            self.send_response(201)
+            self.send_header("Location", "7")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_GET(self):
+            calls.append(("GET", self.path, None))
+            if self.path.endswith("/issue_definitions"):
+                return self._json(200, [{"issue_type_id": "1"}])
+            self._json(200, {"task_id": "7", "scan_status": "succeeded",
+                             "scan_metrics": {"crawl_and_audit_progress": 100, "crawl_requests_made": 40, "audit_requests_made": 300},
+                             "issue_events": [{"id": "1", "type": "issue_found", "issue": {
+                                 "name": "Cross-site scripting (reflected)", "severity": "high", "confidence": "firm",
+                                 "origin": "http://127.0.0.1:9", "path": "/search?q=x", "type_index": 2097920,
+                                 "description": "<p>The value of the <b>q</b> parameter is copied into the HTML.</p>",
+                                 "remediation": "<p>Encode output.</p>", "vulnerability_classifications": "<li>CWE-79</li>",
+                                 "evidence": [{"request_response": {"request": [{"type": "DataSegment",
+                                                                                "data": base64.b64encode(issue_req.encode()).decode()}]}}]}},
+                                 {"id": "2", "type": "issue_found", "issue": {"name": "Cross-site scripting (reflected)", "severity": "high",
+                                                                             "origin": "http://127.0.0.1:9", "path": "/find"}}]})
+
+        def log_message(self, *a):
+            pass
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), B)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, calls
+
+
+def test_burp_rest_scan():
+    from app.scanners import burp
+    req = "GET /search?q=x HTTP/1.1\r\nHost: 127.0.0.1:9\r\nCookie: SESSION=secret123\r\nAuthorization: Bearer tok\r\n\r\n"
+    srv, calls = _serve_fake_burp(req)
+    cfg = {"api_url": f"http://127.0.0.1:{srv.server_port}", "max_minutes": 1}
+    rules = {"allow": ["127.0.0.1"], "deny": []}
+    try:
+        assert burp.test(cfg)["ok"]
+        try:
+            burp.run("https://outside.example/", "safe", cfg, rules, lambda m: None, lambda p, m="": None, lambda: False)
+            raise AssertionError("out-of-scope target was sent to Burp")
+        except scope.OutOfScope:
+            pass
+        assert not [c for c in calls if c[0] == "POST"]
+        res = burp.run("http://127.0.0.1:9/app", "safe", cfg, rules, lambda m: None, lambda p, m="": None, lambda: False,
+                       exclude=["http://127.0.0.1:9/logout"])
+    finally:
+        srv.shutdown()
+    body = [c for c in calls if c[0] == "POST"][0][2]
+    assert body["urls"] == ["http://127.0.0.1:9/app"]
+    assert body["scope"]["include"] == [{"rule": "http://127.0.0.1:9/", "type": "SimpleScopeDef"}]
+    assert body["scope"]["exclude"][0]["rule"] == "http://127.0.0.1:9/logout"
+    assert [c["name"] for c in body["scan_configurations"]] == burp.DEFAULT_CONFIGS["safe"]
+    assert res["status"] == "succeeded" and len(res["findings"]) == 1
+    f = res["findings"][0]
+    assert f["severity"] == "high" and f["cwe"] == ["CWE-79"] and f["kb"] == "xss" and len(f["locations"]) == 2
+    assert "secret123" not in f["evidence"] and "Bearer tok" not in f["evidence"] and "GET /search?q=x" in f["evidence"]
+
+
+def _fake_crawl_scan(mode="safe"):
+    snap = pathlib.Path(tempfile.mkdtemp()) / "web"
+    (snap / "pages").mkdir(parents=True)
+    (snap / "pages" / "0001.txt").write_text("URL: http://127.0.0.1:9/search?q=lamp\nSTATUS: 200\n\nResults for lamp")
+    return {"id": "s1", "kind": "web", "target": "http://127.0.0.1:9", "mode": mode, "options": {},
+            "summary": {"snapshot_dir": str(snap), "pages": ["http://127.0.0.1:9/search?q=lamp"],
+                        "endpoints": [{"method": "GET", "url": "http://127.0.0.1:9/search", "params": ["q"], "sources": ["crawl"]}],
+                        "inventory": [{"product": "jquery", "version": "1.12.4", "status": "eol", "vulns": 4,
+                                       "locations": ["http://127.0.0.1:9/js/jquery.js"]}]}}, snap
+
+
+def test_ai_web_review_api_tool_loop():
+    try:
+        import anthropic  # noqa: F401
+    except ImportError:
+        return
+    from types import SimpleNamespace as NS
+    from app import db
+    from app.advisor import code_review_ai, web_review_ai
+    scan, snap = _fake_crawl_scan()
+    db.set_setting("scope", {"allow": ["127.0.0.1"], "deny": []})
+    script = [
+        [NS(type="tool_use", id="t1", name="read_file", input={"path": "pages/0001.txt"}),
+         NS(type="tool_use", id="t2", name="http_get", input={"url": "https://outside.example/"})],
+        [NS(type="tool_use", id="t3", name="report_finding", input={
+            "title": "Search term reflected in page", "severity": "medium", "cwe": "CWE-79", "url": "http://127.0.0.1:9/search",
+            "method": "GET", "params": ["q"], "evidence": "pages/0001.txt: Results for lamp", "description": "q is echoed",
+            "confidence": "medium", "manual_check": {"request": "GET /search?q=eolscan7x HTTP/1.1\nHost: 127.0.0.1:9",
+                                                     "probe": "unique marker", "expected": "marker appears unencoded",
+                                                     "steps": ["Send to Repeater", "Search the response for the marker"]},
+            "containment": ["WAF rule on q"]}),
+         NS(type="tool_use", id="t4", name="lead_verdict", input={"lead_id": "W1", "verdict": "confirmed", "reason": "seen"})],
+        [NS(type="text", text="Summary: jQuery 1.12.4 is exposed on every page.")],
+    ]
+    seen = []
+
+    class FakeMessages:
+        def create(self, **kw):
+            seen.append({**kw, "messages": list(kw["messages"])})
+            content = script[len(seen) - 1]
+            stop = "tool_use" if any(b.type == "tool_use" for b in content) else "end_turn"
+            return NS(content=content, stop_reason=stop, usage=NS(input_tokens=50, cache_read_input_tokens=0, cache_creation_input_tokens=0))
+
+    orig = code_review_ai._client
+    code_review_ai._client = lambda cfg: NS(messages=FakeMessages())
+    db.set_setting("llm", {**db.get_setting("llm"), "provider": "anthropic", "platform": "anthropic", "send_code": True})
+    try:
+        leads = [{"id": "w9", "category": "config", "severity": "high", "title": "Permissive CORS policy", "location": "/"},
+                 {"id": "c1", "category": "eol", "severity": "high", "title": "jquery 1.12.4 is end-of-life"}]
+        res = web_review_ai.review(scan, leads, lambda m: None, lambda: False)
+    finally:
+        code_review_ai._client = orig
+    assert "http_get" in [t["name"] for t in seen[0]["tools"]]
+    results = seen[1]["messages"][-1]["content"]
+    assert "Results for lamp" in results[0]["content"] and results[1].get("is_error")       # out-of-scope GET refused
+    f = res["findings"][0]
+    assert f["entry_point"] == {"method": "GET", "path": "/search", "params": ["q"], "how": "AI web review"}
+    assert f["manual_check"]["request"].startswith("GET /search?q=eolscan7x") and len(f["manual_check"]["steps"]) == 2
+    assert res["verdicts"] == {"w9": {"verdict": "confirmed", "reason": "seen"}}               # EOL finding is not a lead
+    assert "jquery 1.12.4: lifecycle eol" in (snap / "context.md").read_text()
+    assert json.loads((snap / "leads.json").read_text())[0]["title"] == "Permissive CORS policy"
+    # passive scans: no live requests offered
+    scan2, _ = _fake_crawl_scan("passive")
+    seen.clear(); script[:] = [[NS(type="text", text="ok")]]
+    code_review_ai._client = lambda cfg: NS(messages=FakeMessages())
+    try:
+        web_review_ai.review(scan2, [], lambda m: None, lambda: False)
+    finally:
+        code_review_ai._client = orig
+    assert "http_get" not in [t["name"] for t in seen[0]["tools"]]
+
+
+def test_manual_check_for_finding():
+    from app import db
+    from app.advisor import llm
+    sid = db.create_scan("web", "http://127.0.0.1:9", "safe", "t", "", {})
+    f = {"id": "mc1", "category": "web-app", "severity": "medium", "title": "Open redirect", "location": "http://127.0.0.1:9/go?to=x"}
+    db.add_finding(sid, f)
+    prompts = []
+    orig = llm.complete
+    llm.complete = lambda p, cfg=None, max_tokens=0: (prompts.append(p) or 'Here:\n{"request": "GET /go?to=https://lab-tester.internal/ HTTP/1.1", '
+                                                     '"probe": "a lab host you control", "expected": "302 to that host", "steps": ["Repeater"]}')
+    try:
+        mc = llm.manual_check_for(f)
+    finally:
+        llm.complete = orig
+    assert mc["request"].startswith("GET /go?to=") and mc["steps"] == ["Repeater"]
+    assert "Never write payloads" in prompts[0] and "http://127.0.0.1:9" in prompts[0]
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

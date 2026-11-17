@@ -250,6 +250,8 @@ KB: dict[str, dict] = {
     "unauth-datastore": PRODUCTS["elasticsearch"],
     "api-docs": {"contain": [S("Restrict API docs", "Serve Swagger/GraphQL introspection only on internal/dev profiles.", effort="low", kind="harden")],
                  "manual": ["Use the API spec to enumerate unauthenticated endpoints and test authz (IDOR) in lab."]},
+    "html-comments": {"contain": [S("Strip comments at the proxy", "If templates can't change, strip HTML comments in the response at a reverse proxy (e.g. nginx sub_filter / an F5 iRule) and remove secrets they mention.", effort="medium", kind="harden")],
+                      "manual": ["Read each comment: credentials, internal hostnames, hidden URLs or old versions are leads for further testing (and any secret must be rotated)."]},
     "http-methods": {"contain": [S("Disable unused verbs", "Allow only GET/POST/HEAD (and those the app needs).",
                                    "if ($request_method !~ ^(GET|POST|HEAD)$) { return 405; }\n# Apache\nTraceEnable Off", effort="low", kind="harden")],
                      "manual": ["Verify PUT/DELETE/WebDAV are not actually writable — use OPTIONS and a non-destructive PROPFIND rather than uploading."]},

@@ -22,15 +22,23 @@ from .. import db
 from ..importers import _kb_for, _cwes
 from .llm import LLMUnavailable, PLATFORMS, _client, model_for
 
+MANUAL_CHECK_RULES = (
+    "Manual checks must be safe to run against a shared lab system: use benign probe values only, such as a unique "
+    "marker string to see whether input is reflected or stored unencoded, a single quote or other syntax character to "
+    "see whether it causes a database or parser error, two values that should give the same result (for example 5 and "
+    "6-1) to see whether input is evaluated, another record's id while logged in as a low-privilege test user, or a "
+    "URL pointing at a host the tester controls inside the lab. Never write payloads that extract data, run commands, "
+    "read files, bypass authentication in bulk, change or delete data, or cause a denial of service."
+)
+
 SYSTEM = (
     "You are a senior application security engineer doing an authorized source code review for an internal security "
     "team. The application is a legacy QA/lab system whose code will not be changed, so the team needs an accurate list "
     "of real, reachable vulnerabilities and how to contain them at the infrastructure level (WAF/proxy rules, network "
     "isolation, configuration, monitoring). Be precise and evidence-based: cite file and line, trace data from its source "
     "to the dangerous sink, and say what protection is missing. Prefer fewer, confirmed findings over speculative ones. "
-    "For verification, describe how a tester can safely confirm the issue in the authorized lab (which request and "
-    "parameter to examine and what observable behavior confirms it). Keep verification non-destructive; do not write "
-    "exploit payloads or weaponized code."
+    "For each issue, give the tester a manual check (a proof-of-concept they run by hand in the authorized lab): the "
+    "HTTP request to send, with a benign probe value, and the observable behavior that confirms the issue. " + MANUAL_CHECK_RULES
 )
 
 TASK = """Review the application source in the working folder.
@@ -50,9 +58,9 @@ How to work:
 
 For every confirmed vulnerability report: title; severity (critical/high/medium/low); CWE id; file and line; the entry
 point (HTTP method, path, parameter) if you can determine it; the data flow from source to sink; why existing protections
-do not stop it; confidence (high/medium/low); verification steps a tester can follow safely in the lab (what to send to
-which endpoint/parameter in general terms and what observable behavior confirms it; non-destructive, no exploit
-payloads); and containment steps that need no code change.
+do not stop it; confidence (high/medium/low); a manual check the tester can run by hand in the lab (the HTTP request
+template with a benign probe value in place of the parameter, what to look for in the response, and short steps for
+Burp Repeater; see the rules on safe probes); and containment steps that need no code change.
 For every rule-based lead you checked, give a verdict: confirmed, likely false positive, or needs runtime check, with a
 one-line reason. Finish with a short overall summary (most important risks first)."""
 
@@ -60,7 +68,10 @@ CC_OUTPUT = """
 When you are done, reply with ONLY a JSON object in a ```json fenced block, with this shape:
 {"findings": [{"title": "", "severity": "high", "cwe": "CWE-89", "file": "path/from/root", "line": 1,
   "entry_point": {"method": "GET", "path": "/x", "params": ["id"]}, "data_flow": "", "description": "",
-  "missing_protection": "", "confidence": "high", "verification": ["step"], "containment": ["step"]}],
+  "missing_protection": "", "confidence": "high",
+  "manual_check": {"request": "GET /x?id=<probe> HTTP/1.1\\nHost: <lab host>", "probe": "benign value and why",
+                   "expected": "what in the response confirms it", "steps": ["Burp Repeater step"]},
+  "containment": ["step"]}],
  "verdicts": [{"lead_id": "<id from the leads list>", "verdict": "confirmed|likely false positive|needs runtime check",
   "reason": ""}],
  "summary": "markdown summary"}"""
@@ -84,9 +95,12 @@ TOOLS = [
                                                          "params": {"type": "array", "items": {"type": "string"}}}},
          "data_flow": {"type": "string"}, "description": {"type": "string"}, "missing_protection": {"type": "string"},
          "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
-         "verification": {"type": "array", "items": {"type": "string"}},
+         "manual_check": {"type": "object", "description": "Hand-run proof of concept for the lab, benign probes only.",
+                          "properties": {"request": {"type": "string", "description": "HTTP request template with the benign probe in place"},
+                                         "probe": {"type": "string"}, "expected": {"type": "string"},
+                                         "steps": {"type": "array", "items": {"type": "string"}}}},
          "containment": {"type": "array", "items": {"type": "string"}}},
-         "required": ["title", "severity", "file", "description", "verification", "containment"]}},
+         "required": ["title", "severity", "file", "description", "manual_check", "containment"]}},
     {"name": "lead_verdict", "description": "Record your verdict on one rule-based lead from the context.",
      "input_schema": {"type": "object", "properties": {
          "lead_id": {"type": "string"},
@@ -206,8 +220,18 @@ def _to_finding(d: dict, engine_label: str) -> Optional[dict]:
         "cwe": [f"CWE-{c}" for c in cwes][:3], "confidence": d.get("confidence"),
         **({"entry_point": ep} if ep else {}),
         "verification_steps": [str(x) for x in (d.get("verification") or [])][:12],
+        **({"manual_check": mc} if (mc := manual_check(d.get("manual_check"))) else {}),
         "ai_containment": [str(x) for x in (d.get("containment") or [])][:12],
     }
+
+
+def manual_check(mc) -> Optional[dict]:
+    """Normalize the AI's manual check (PoC) object; None when it gave nothing usable."""
+    if not isinstance(mc, dict):
+        return None
+    out = {k: str(mc.get(k) or "").strip()[:3000] for k in ("request", "probe", "expected")}
+    out["steps"] = [str(x)[:500] for x in (mc.get("steps") or []) if x][:10]
+    return out if any(out.values()) else None
 
 
 def _parse_json_block(text: str) -> dict:
@@ -220,20 +244,16 @@ def _parse_json_block(text: str) -> dict:
 
 
 # ---------------------------------------------------------------- engines
-def _review_api(root: Path, ctx: str, cfg: dict, log, cancelled) -> dict:
+def tool_loop(cfg: dict, system: str, first: str, tools: list[dict], handle: Callable[[str, dict], str],
+              log: Callable[[str], None], cancelled: Callable[[], bool], max_turns: int, budget: int) -> dict:
+    """Manual tool-use loop shared by the code and web reviews. handle(name, input) returns the tool result text; an
+    exception is sent back to the model as an error result. Returns {summary, model, turns, input_tokens}."""
     import anthropic
 
     client = _client(cfg)
     model = model_for(cfg)
-    tree = SourceTree(root)
-    review_cfg = db.get_setting("code_review")
-    max_turns = int(review_cfg.get("max_turns", 60))
-    budget = int(review_cfg.get("max_input_tokens", 4_000_000))
-    messages: list = [{"role": "user", "content": TASK.format(context=ctx)
-                       + "\n\nUse report_finding for each confirmed vulnerability and lead_verdict for each lead. "
-                         "Your final message (no tool calls) is the overall summary."}]
-    findings, verdicts, summary = [], {}, ""
-    used, turns = 0, 0
+    messages: list = [{"role": "user", "content": first}]
+    summary, used, turns = "", 0, 0
     # Prompt caching keeps the growing conversation cheap; effort "high" for a thorough review. Some platforms or
     # gateways reject these, so they are dropped after the first 400 that mentions them.
     extras: dict = {"cache_control": {"type": "ephemeral"}, "output_config": {"effort": cfg.get("effort") or "high"}}
@@ -242,7 +262,7 @@ def _review_api(root: Path, ctx: str, cfg: dict, log, cancelled) -> dict:
         nonlocal extras
         for _ in range(2):
             try:
-                return client.messages.create(model=model, max_tokens=16000, system=SYSTEM, tools=TOOLS, messages=msgs, **extras)
+                return client.messages.create(model=model, max_tokens=16000, system=system, tools=tools, messages=msgs, **extras)
             except TypeError:
                 if not extras:
                     raise
@@ -277,27 +297,8 @@ def _review_api(root: Path, ctx: str, cfg: dict, log, cancelled) -> dict:
             break
         results = []
         for tu in tool_uses:
-            inp = tu.input if isinstance(tu.input, dict) else {}
             try:
-                if tu.name == "list_files":
-                    out = tree.list_files(str(inp.get("glob") or "**/*"))
-                elif tu.name == "read_file":
-                    log(f"reading {inp.get('path')}")
-                    out = tree.read_file(str(inp.get("path", "")), inp.get("start_line") or 1, inp.get("end_line"))
-                elif tu.name == "search":
-                    out = tree.search(str(inp.get("pattern", "")), inp.get("glob"))
-                elif tu.name == "report_finding":
-                    f = _to_finding(inp, f"Claude AI review ({model})")
-                    if not f:
-                        raise ValueError("title and file are required")
-                    findings.append(f)
-                    log(f"finding: [{f['severity']}] {f['title']} ({f['location']})")
-                    out = "recorded"
-                elif tu.name == "lead_verdict":
-                    verdicts[str(inp.get("lead_id"))] = {"verdict": inp.get("verdict"), "reason": inp.get("reason", "")}
-                    out = "recorded"
-                else:
-                    raise ValueError(f"unknown tool {tu.name}")
+                out = handle(tu.name, tu.input if isinstance(tu.input, dict) else {})
                 results.append({"type": "tool_result", "tool_use_id": tu.id, "content": out})
             except Exception as e:  # noqa: BLE001 - report tool errors back to the model
                 results.append({"type": "tool_result", "tool_use_id": tu.id, "content": f"Error: {e}", "is_error": True})
@@ -309,8 +310,40 @@ def _review_api(root: Path, ctx: str, cfg: dict, log, cancelled) -> dict:
             summary = "".join(b.text for b in final.content if b.type == "text").strip()
             break
         messages.append({"role": "user", "content": results})
-    return {"findings": findings, "verdicts": verdicts, "summary": summary, "model": model, "turns": turns,
-            "input_tokens": used, "engine": PLATFORMS.get(cfg.get("platform"), {}).get("label")}
+    return {"summary": summary, "model": model, "turns": turns, "input_tokens": used}
+
+
+def _review_api(root: Path, ctx: str, cfg: dict, log, cancelled) -> dict:
+    tree = SourceTree(root)
+    review_cfg = db.get_setting("code_review")
+    model = model_for(cfg)
+    findings, verdicts = [], {}
+
+    def handle(name: str, inp: dict) -> str:
+        if name == "list_files":
+            return tree.list_files(str(inp.get("glob") or "**/*"))
+        if name == "read_file":
+            log(f"reading {inp.get('path')}")
+            return tree.read_file(str(inp.get("path", "")), inp.get("start_line") or 1, inp.get("end_line"))
+        if name == "search":
+            return tree.search(str(inp.get("pattern", "")), inp.get("glob"))
+        if name == "report_finding":
+            f = _to_finding(inp, f"Claude AI review ({model})")
+            if not f:
+                raise ValueError("title and file are required")
+            findings.append(f)
+            log(f"finding: [{f['severity']}] {f['title']} ({f['location']})")
+            return "recorded"
+        if name == "lead_verdict":
+            verdicts[str(inp.get("lead_id"))] = {"verdict": inp.get("verdict"), "reason": inp.get("reason", "")}
+            return "recorded"
+        raise ValueError(f"unknown tool {name}")
+
+    first = (TASK.format(context=ctx) + "\n\nUse report_finding for each confirmed vulnerability and lead_verdict for each "
+             "lead. Your final message (no tool calls) is the overall summary.")
+    r = tool_loop(cfg, SYSTEM, first, TOOLS, handle, log, cancelled, int(review_cfg.get("max_turns", 60)),
+                  int(review_cfg.get("max_input_tokens", 4_000_000)))
+    return {"findings": findings, "verdicts": verdicts, **r, "engine": PLATFORMS.get(cfg.get("platform"), {}).get("label")}
 
 
 def _review_claude_code(root: Path, ctx: str, cfg: dict, log, cancelled) -> dict:

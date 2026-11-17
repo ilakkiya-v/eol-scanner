@@ -86,7 +86,8 @@ def enrich(components: list[Component], online: bool, osv_enabled: bool, log: Ca
         status = lc.get("status")
         inv = {"product": g["product"], "version": g["version"], "status": status, "eol_date": lc.get("eol_date"),
                "cycle": lc.get("cycle"), "latest": lc.get("latest_version"), "vulns": len(vulns), "confidence": g["confidence"],
-               "ecosystem": g["ecosystem"], "package": g["package"], "direct": g["direct"], "sources": g["sources"]}
+               "ecosystem": g["ecosystem"], "package": g["package"], "direct": g["direct"], "sources": g["sources"],
+               "locations": list(dict.fromkeys(e.get("location") for e in g["evidence"] if e.get("location")))[:3]}
         inventory.append(inv)
 
         if status == "eol":

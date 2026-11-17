@@ -58,22 +58,51 @@ def _run_web(sid: str, target: str, mode: str, options: dict) -> None:
     try:
         rules = db.get_setting("scope")
         feeds_cfg = db.get_setting("feeds")
+        burp_cfg = db.get_setting("burp")
         log(f"web scan {target} mode={mode} operator={db.get_scan(sid)['operator']}")
-        scanner = WebScanner(target, mode, options, rules, log, progress, cancelled)
+        snap = code_scanner.new_workdir(UPLOAD_DIR) / "web"
+        snap.mkdir(parents=True, exist_ok=True)
+        options = {**options, "snapshot_dir": str(snap)}
+        if options.get("burp_proxy"):
+            options["proxy_url"] = burp_cfg.get("proxy_url") or "http://127.0.0.1:8080"
+        use_burp = bool(options.get("burp_scan"))
+        share = 0.55 if use_burp else 1.0  # with a Burp scan, our crawl is the first half of the progress bar
+        scanner = WebScanner(target, mode, options, rules, log, lambda p, m="": progress(p * share, m), cancelled)
         res = asyncio.run(scanner.run())
         log(f"{res.requests} HTTP requests sent")
+        burp_findings, burp_info = [], None
+        if use_burp and not cancelled():
+            from .scanners import burp
+            progress(0.55, "Burp Suite scan starting")
+            try:
+                exclude = [e["url"] for e in res.endpoints if e.get("not_followed")]
+                br = burp.run(scanner.target, mode, burp_cfg, rules, log, lambda p, m="": progress(0.55 + 0.35 * p, m),
+                              cancelled, exclude)
+                burp_findings = br["findings"]
+                burp_info = {"task_id": br["task_id"], "status": br["status"], "issues": len(burp_findings),
+                             "metrics": br["metrics"]}
+                log(f"Burp reported {len(burp_findings)} issue types")
+            except (burp.BurpError, scope.OutOfScope) as e:
+                log(f"Burp scan skipped: {e}")
+                burp_info = {"error": str(e)[:400]}
         progress(0.92, "lifecycle + vulnerability lookups")
         comp_findings, inventory = analysis.enrich(res.components, feeds_cfg.get("online", True), feeds_cfg.get("osv", True), log, progress)
-        raw = analysis.enrich_raw(res.findings)
-        _finish(sid, comp_findings + raw, inventory, {"pages": res.pages[:200], "scripts": res.scripts[:300],
+        raw = analysis.enrich_raw(res.findings + burp_findings)
+        (snap / "index.json").write_text(__import__("json").dumps(scanner.snap.index, indent=1), encoding="utf-8")
+        _finish(sid, comp_findings + raw, inventory, {"pages": res.pages[:500], "scripts": res.scripts[:300],
                                                        "requests": res.requests, "tls": res.tls,
-                                                       "api_endpoints": res.api_endpoints})
+                                                       "api_endpoints": res.api_endpoints,
+                                                       "endpoints": res.endpoints[:3000], "page_info": res.page_info[:1000],
+                                                       "snapshot_dir": str(snap), "burp": burp_info})
         db.update_scan(sid, status="cancelled" if cancelled() else "done", progress=1.0, message="complete", finished=time.time())
     except Exception as e:
         log("ERROR: " + "".join(traceback.format_exception_only(type(e), e)).strip())
         db.update_scan(sid, status="error", message=str(e)[:300], finished=time.time())
     finally:
         _cancel.pop(sid, None)
+    s = db.get_scan(sid)
+    if options.get("ai_review") and s and s["status"] == "done":
+        start_ai_review(sid)
 
 
 def _run_code(sid: str, archive: Path, options: dict) -> None:
@@ -129,6 +158,8 @@ def start_web(target: str, mode: str, operator: str, ticket: str, options: dict)
     stored = {k: v for k, v in opts.items() if k not in ("headers", "cookies")}
     stored["auth_headers"] = sorted((opts.get("headers") or {}).keys())
     stored["cookies_set"] = bool(opts.get("cookies"))
+    if opts.get("burp_scan") or opts.get("burp_proxy"):
+        stored["burp"] = {"scan": bool(opts.get("burp_scan")), "proxy": bool(opts.get("burp_proxy"))}
     sid = db.create_scan("web", url, mode, operator, ticket, stored)
     _pool.submit(_run_web, sid, url, mode, opts)
     return sid
@@ -176,18 +207,21 @@ def import_results(tool: str, filename: str, findings: list[dict], operator: str
 
 
 def remove_source(sid: str) -> bool:
-    """Delete the kept source of a code scan (called on scan delete or from the UI)."""
+    """Delete the kept source of a code scan / saved crawl data of a web scan (on scan delete or from the UI)."""
     s = db.get_scan(sid)
     if not s:
         return False
-    src = (s.get("summary") or {}).get("source_dir")
-    if src and Path(src).resolve().is_relative_to(UPLOAD_DIR.resolve()):  # never delete outside the uploads folder
-        shutil.rmtree(Path(src).parent, ignore_errors=True)
-        summary = s["summary"]
-        summary.pop("source_dir", None)
+    summary = s.get("summary") or {}
+    removed = False
+    for key in ("source_dir", "snapshot_dir"):
+        src = summary.get(key)
+        if src and Path(src).resolve().is_relative_to(UPLOAD_DIR.resolve()):  # never delete outside the uploads folder
+            shutil.rmtree(Path(src).parent, ignore_errors=True)
+            summary.pop(key, None)
+            removed = True
+    if removed:
         db.update_scan(sid, summary=summary)
-        return True
-    return False
+    return removed
 
 
 def start_ai_review(sid: str) -> None:
@@ -199,7 +233,7 @@ def start_ai_review(sid: str) -> None:
 
 
 def _run_ai_review(sid: str) -> None:
-    from .advisor import code_review_ai
+    from .advisor import code_review_ai, web_review_ai
 
     def set_status(**kw):
         s = db.get_scan(sid)
@@ -215,7 +249,8 @@ def _run_ai_review(sid: str) -> None:
     set_status(state="running", started=time.time())
     try:
         s = db.get_scan(sid)
-        res = code_review_ai.review(s, db.get_findings(sid), log, ev.is_set)
+        engine = web_review_ai if s["kind"] == "web" else code_review_ai
+        res = engine.review(s, db.get_findings(sid), log, ev.is_set)
         new = analysis.enrich_raw(res["findings"])
         for f in new:
             db.add_finding(sid, f)
