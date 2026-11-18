@@ -274,11 +274,11 @@ def advise_finding(f: dict, context: Optional[str] = None) -> str:
         "Produce a containment plan for this finding from an authorized scan of an internal QA application whose code "
         "will not be changed. Include: 1) realistic attack paths given the details, 2) prioritized containment steps "
         "with config snippets (nginx/Apache/IIS/WAF as relevant), 3) non-destructive lab verification steps, 4) what "
-        "to monitor, 5) retirement/upgrade notes.\n\n"
-        f"Finding:\n```json\n{json.dumps(_finding_brief(f), indent=2)}\n```\n"
-        + (f"\nEnvironment notes from the operator: {context}\n" if context else "")
+        "to monitor, 5) retirement/upgrade notes.\n" + UNTRUSTED_RULES + "\n\n"
+        f"<untrusted_finding_data>\n{json.dumps(_finding_brief(f), indent=2)}\n</untrusted_finding_data>\n"
+        + (f"\nEnvironment notes from the operator (trusted): {context}\n" if context else "")
     )
-    return complete(prompt)
+    return clean(complete(prompt), db.get_setting("scope"))
 
 
 def _code_excerpt(f: dict, scan: Optional[dict]) -> str:
@@ -322,9 +322,10 @@ def manual_check_for(f: dict) -> dict:
         "vulnerable feature is exposed (which URL, which response shows it), not an exploit.\n"
         "Reply with ONLY a JSON object: {\"request\": \"raw HTTP request template with the probe in place\", "
         "\"probe\": \"the benign value and why it is safe\", \"expected\": \"what in the response confirms or rules out "
-        "the issue\", \"steps\": [\"short Burp Repeater / browser steps\"]}\n\n"
-        f"Scan target: {target or 'source code review'}\nFinding:\n```json\n{json.dumps(brief, indent=1, default=str)}\n```\n"
-        + (f"\nRelevant code:\n```\n{code}\n```\n" if code else "")
+        "the issue\", \"steps\": [\"short Burp Repeater / browser steps\"]}\n" + UNTRUSTED_RULES + "\n\n"
+        f"Scan target (trusted): {target or 'source code review'}\n"
+        f"<untrusted_finding_data>\n{json.dumps(brief, indent=1, default=str)}\n</untrusted_finding_data>\n"
+        + (f"\n<untrusted_source_code>\n{code}\n</untrusted_source_code>\n" if code else "")
     )
     text = complete(prompt, max_tokens=4000)
     m = re.search(r"\{.*\}", text, re.S)
@@ -332,4 +333,10 @@ def manual_check_for(f: dict) -> dict:
         mc = manual_check(json.loads(m.group(0))) if m else None
     except ValueError:
         mc = None
-    return mc or {"request": "", "probe": "", "expected": text.strip()[:3000], "steps": []}
+    rules = db.get_setting("scope")
+    mc = clean(mc or {"request": "", "probe": "", "expected": text.strip()[:3000], "steps": []}, rules)
+    mc["warnings"] = lint_manual_check(mc, target, rules)  # deterministic review of what the AI wrote
+    return mc
+
+
+from .guard import UNTRUSTED_RULES, clean, lint_manual_check  # noqa: E402 - guard imports scanners, keep it last

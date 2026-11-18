@@ -3,9 +3,13 @@
 This is how a Claude Enterprise user can use their own Claude login (and Mythos, if their org enabled it) without an
 API key: the scanner runs `claude -p` as a child process. Safety:
   * the prompt is sent on stdin, never as a command-line argument (no shell / cmd.exe quoting issues);
-  * only read-only tools are allowed (Read, Grep, Glob); Bash, Edit, Write, web tools and sub-agents are disallowed;
-  * the working directory is the extracted source folder (or an empty temp folder for plain questions), so Claude Code
-    can only read the code under review;
+  * only read-only tools exist in the session (--tools Read,Grep,Glob); Bash, Edit, Write, web tools, sub-agents and
+    MCP tools are also denied (--disallowedTools), and nothing is pre-approved (--permission-mode dontAsk);
+  * the working directory is the extracted source / saved crawl folder (or an empty temp folder for plain questions),
+    and permissions.blockReadsOutsideWorkingDirectories stops the file tools reading anything else on the machine;
+  * the uploaded code cannot configure the session: project/local settings (.claude/settings*.json, hooks, allow rules)
+    are not loaded (--setting-sources user), hooks are disabled, .mcp.json is ignored (--strict-mcp-config), and
+    CLAUDE.md / .claude files in the folder are set aside for the duration of the run (they could carry instructions);
   * ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN are removed from the child's environment so it uses the logged-in account.
 """
 from __future__ import annotations
@@ -22,7 +26,14 @@ from pathlib import Path
 from typing import Callable, Optional
 
 READ_ONLY_TOOLS = ["Read", "Grep", "Glob"]
-BLOCKED_TOOLS = ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "Task", "Agent"]
+BLOCKED_TOOLS = ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "Task", "Agent", "mcp__*"]
+# Session settings passed inline: they can only restrict (no allow rules), and override nothing the user's org enforces.
+SESSION_SETTINGS = {"permissions": {"blockReadsOutsideWorkingDirectories": True},
+                    "disableAllHooks": True}
+# Files in an uploaded codebase that Claude Code would treat as instructions or configuration.
+_INSTRUCTION_FILES = {"CLAUDE.md", "CLAUDE.local.md", ".mcp.json"}
+_INSTRUCTION_DIRS = {".claude"}
+_QUARANTINE_SUFFIX = ".eolscan-set-aside"
 _SAFE_ARG = re.compile(r"^[A-Za-z0-9._:@/\[\]-]{1,120}$")
 
 
@@ -60,10 +71,34 @@ def _base_args(cli: str, cfg: dict, max_turns: int, tools: bool) -> list[str]:
         if not _SAFE_ARG.match(model):
             raise ClaudeCodeError(f"model name '{model}' contains unexpected characters")
         args += ["--model", model]
-    if tools:
-        args += ["--allowedTools", *READ_ONLY_TOOLS]
-    args += ["--disallowedTools", *BLOCKED_TOOLS]
+    args += ["--tools", ",".join(READ_ONLY_TOOLS) if tools else "",
+             "--permission-mode", "dontAsk", "--setting-sources", "user", "--strict-mcp-config",
+             "--settings", json.dumps(SESSION_SETTINGS), "--disallowedTools", *BLOCKED_TOOLS]
     return args
+
+
+def _set_aside(root: str) -> list[tuple[Path, Path]]:
+    """Rename CLAUDE.md / .claude / .mcp.json inside the folder so Claude Code doesn't load them as instructions."""
+    moved = []
+    for dp, dns, fns in os.walk(root):
+        for name in [n for n in dns if n in _INSTRUCTION_DIRS] + [n for n in fns if n in _INSTRUCTION_FILES]:
+            src = Path(dp) / name
+            dst = src.with_name(name + _QUARANTINE_SUFFIX)
+            try:
+                src.rename(dst)
+                moved.append((src, dst))
+            except OSError:
+                pass
+        dns[:] = [n for n in dns if n not in _INSTRUCTION_DIRS and not n.endswith(_QUARANTINE_SUFFIX)]
+    return moved
+
+
+def _restore(moved: list[tuple[Path, Path]]) -> None:
+    for src, dst in reversed(moved):
+        try:
+            dst.rename(src)
+        except OSError:
+            pass
 
 
 def run(prompt: str, cfg: dict, cwd: Optional[str] = None, *, tools: bool = False, max_turns: int = 3,
@@ -79,6 +114,16 @@ def run(prompt: str, cfg: dict, cwd: Optional[str] = None, *, tools: bool = Fals
         tmp = tempfile.mkdtemp(prefix="eolscan-cc-")
         cwd = tmp
     args = _base_args(cli, cfg, max_turns, tools)
+    moved = _set_aside(cwd)
+    try:
+        return _run(args, cwd, prompt, timeout, log, cancelled, tmp)
+    finally:
+        _restore(moved)
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _run(args: list[str], cwd: str, prompt: str, timeout: int, log, cancelled, tmp) -> dict:
     try:
         proc = subprocess.Popen(args, cwd=cwd, env=_env(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
@@ -139,8 +184,6 @@ def run(prompt: str, cfg: dict, cwd: Optional[str] = None, *, tools: bool = Fals
             if ev.get("is_error"):
                 raise ClaudeCodeError(f"Claude Code reported an error: {str(ev.get('result') or ev.get('subtype'))[:400]}")
     proc.wait()
-    if tmp:
-        shutil.rmtree(tmp, ignore_errors=True)
     if killed:
         raise ClaudeCodeError(f"Claude Code {killed}")
     if not result["text"]:
@@ -153,6 +196,9 @@ def run(prompt: str, cfg: dict, cwd: Optional[str] = None, *, tools: bool = Fals
     if proc.returncode not in (0, None) and not result["text"]:
         err = " ".join(stderr_lines)[-600:].strip()
         hint = " (not signed in? run `claude` once and use /login)" if re.search(r"log ?in|auth|credential|401", err, re.I) else ""
+        if re.search(r"unknown option|unrecognized|invalid (?:option|value|setting)", err, re.I):
+            hint = (" (this Claude Code version doesn't support the safety settings this app requires; update it with "
+                    "`claude update` and try again)")
         raise ClaudeCodeError(f"Claude Code exited with code {proc.returncode}{hint}: {err or 'no output'}")
     return result
 

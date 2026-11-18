@@ -44,10 +44,18 @@ def origin(url: str) -> str:
     return f"{p.scheme}://{p.netloc}".lower()
 
 
+def _id_like(v: str) -> bool:
+    """Values that identify a record (collapsed) rather than pick a page/route (kept)."""
+    return bool(re.fullmatch(r"-?\d+(?:\.\d+)?|[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}|[0-9a-f]{16,}|.{41,}",
+                             v, re.I)) or not re.fullmatch(r"[\w.\-/]{1,40}", v)
+
+
 def pattern_key(url: str) -> str:
     """Collapse URLs that are the same page with different ids so the crawl spends its budget on new pages.
 
-    /item/123?id=5&x=a -> /item/{n}?id&x ; /u/3f2a...(uuid/hex) -> /u/{id}
+    /item/123?id=5&x=a -> /item/{n}?id&x=a ; /u/3f2a...(uuid/hex) -> /u/{id}
+    Route-like query values (index.php?page=about, ?action=list, ?module=users) are kept, because legacy PHP/JSP/ASP
+    apps use them to pick the page: collapsing them would hide most of the app.
     """
     p = urlsplit(url)
     segs = []
@@ -58,8 +66,8 @@ def pattern_key(url: str) -> str:
                 re.fullmatch(r"[0-9a-f]{16,}", s, re.I):
             s = "{id}"
         segs.append(s)
-    names = sorted({k for k, _ in parse_qsl(p.query, keep_blank_values=True)})
-    return p.netloc.lower() + "/".join(segs) + ("?" + "&".join(names) if names else "")
+    parts = sorted({k if _id_like(v) else f"{k}={v.lower()}" for k, v in parse_qsl(p.query, keep_blank_values=True)})
+    return p.netloc.lower() + "/".join(segs) + ("?" + "&".join(parts) if parts else "")
 
 
 def query_params(url: str) -> list[str]:

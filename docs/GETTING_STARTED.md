@@ -181,6 +181,13 @@ The extracted source is kept so the AI review can read it. **Delete kept source*
 4. **Extra engines** (optional): Burp Suite (see below) and **AI web review when the scan finishes**.
 5. **Authorization:** your name and ticket. Under **Advanced** you can add a session cookie or auth header for a logged-in crawl. Log in with a test account, then copy the cookie from Burp or the browser. It is never stored.
 
+**If the crawl finds little**, it is almost always one of these. The **Attack surface** tab's *How the crawl went* panel tells you which:
+- **The app needs a login.** Under *Logged-in crawl*, give the login page and a **dedicated test account**. The scanner fills in the app's own form once, keeps the session and never follows logout links. The password is not stored. If the login goes through single sign-on on another host, paste a session cookie under **Advanced** instead.
+- **Pages aren't linked from anywhere.** Keep **Guess common unlinked paths** ticked. It tries about 340 well-known admin, API, docs and backup paths with GET and filters out "soft 404" pages. Also add the pages you know about under *Extra start paths*.
+- **The app spans several hosts.** The panel lists other hosts the app links to. Add them to the scope and tick **Also crawl other allowlisted hosts**.
+- **It's a single-page JavaScript app.** Tick **Also render pages in a headless browser**.
+- **It hit the page limit.** Raise **Max pages**.
+
 **What the crawl finds.** It follows every link, frame and meta refresh, and reads `robots.txt`, sitemaps and OpenAPI/Swagger documents. It pulls endpoint paths out of JavaScript (fetch/axios/jQuery calls and `/api/...` strings) and records every form with its fields. It does not follow logout, delete, reset or similar links, and it never submits forms or requests POST targets. Pages that differ only by an id (`/item/1`, `/item/2`, …) are visited a few times, not hundreds.
 
 **Results** are split like the code review:
@@ -196,7 +203,14 @@ For several targets, the Dashboard shows **Multi-target scans** with a **Combine
 - looks for what automated checks miss: reflected input, verbose errors, IDOR candidates, open redirects, SSRF-style URL parameters, forms without anti-CSRF tokens, secrets in scripts, exposed admin functions;
 - says where each end-of-life component is exposed.
 
-Every issue it reports comes with a **manual check (PoC)** and containment. With an API connection (not Claude Code), it may also send a limited number of live in-scope GET requests (default 40; Settings → Code review) to confirm what it sees, in Safe and Active scans only. The crawled pages are saved, with cookie and authorization values redacted, so the review can read them. Deleting the scan, or **Delete saved crawl data** on the AI tab, removes them.
+Every issue it reports comes with a **manual check (PoC)** and containment.
+
+The scanner checks the AI's work in code, not by trusting the AI:
+- Each finding's quoted evidence is looked up in the crawled pages. If it can't be found, the finding shows **unverified** and is capped in severity.
+- Each manual check is scanned for harmful requests, which get a red warning.
+- Pages that contain text aimed at AI tools are reported as a separate finding.
+
+See [THREAT_MODEL.md](THREAT_MODEL.md). With an API connection (not Claude Code), it may also send a limited number of live in-scope GET requests (default 40; Settings → Code review) to confirm what it sees, in Safe and Active scans only. The crawled pages are saved, with cookie and authorization values redacted, so the review can read them. Deleting the scan, or **Delete saved crawl data** on the AI tab, removes them.
 
 #### Using your Burp Suite Professional licence
 
@@ -236,7 +250,7 @@ These checks use only your laptop: no VPN, no lab, no Claude needed.
    - Windows: `.venv\Scripts\python tests\test_core.py`
    - Mac/Linux: `.venv/bin/python tests/test_core.py`
 
-   You should see 26 lines starting with `ok`. A `skip` line is fine for an optional extra you didn't install.
+   You should see 30 lines starting with `ok`. A `skip` line is fine for an optional extra you didn't install.
 2. **Fake legacy web app.** In a second terminal, run `.venv/bin/python tests/fake_target.py 8899` (Windows: `.venv\Scripts\python tests\fake_target.py 8899`). Then:
    - add `127.0.0.1` to the scope;
    - start a **Web scan** of `http://127.0.0.1:8899` in **Active** mode.

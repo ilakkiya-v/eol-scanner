@@ -93,7 +93,8 @@ def _run_web(sid: str, target: str, mode: str, options: dict) -> None:
                                                        "requests": res.requests, "tls": res.tls,
                                                        "api_endpoints": res.api_endpoints,
                                                        "endpoints": res.endpoints[:3000], "page_info": res.page_info[:1000],
-                                                       "snapshot_dir": str(snap), "burp": burp_info})
+                                                       "snapshot_dir": str(snap), "burp": burp_info,
+                                                       "crawl_stats": res.crawl_stats})
         db.update_scan(sid, status="cancelled" if cancelled() else "done", progress=1.0, message="complete", finished=time.time())
     except Exception as e:
         log("ERROR: " + "".join(traceback.format_exception_only(type(e), e)).strip())
@@ -155,7 +156,7 @@ def start_web(target: str, mode: str, operator: str, ticket: str, options: dict)
     scope.check(url)  # fail fast before queuing
     opts = {**db.get_setting("scan_defaults"), **{k: v for k, v in options.items() if v not in (None, "")}}
     opts["raw_target"] = raw_target
-    stored = {k: v for k, v in opts.items() if k not in ("headers", "cookies")}
+    stored = {k: v for k, v in opts.items() if k not in ("headers", "cookies", "login_password")}  # secrets never stored
     stored["auth_headers"] = sorted((opts.get("headers") or {}).keys())
     stored["cookies_set"] = bool(opts.get("cookies"))
     if opts.get("burp_scan") or opts.get("burp_proxy"):

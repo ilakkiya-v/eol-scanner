@@ -17,7 +17,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Callable, Optional
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlencode, urljoin, urlsplit
 
 import httpx
 from bs4 import BeautifulSoup
@@ -39,6 +39,7 @@ class WebScanResult:
     api_endpoints: list[str] = field(default_factory=list)
     endpoints: list[dict] = field(default_factory=list)   # method, url, params, sources, status, ... (attack surface)
     page_info: list[dict] = field(default_factory=list)   # url, status, type, title, size
+    crawl_stats: dict = field(default_factory=dict)       # what the crawl skipped and why, login result, guesses
 
 
 _REDACT = re.compile(r"^(set-cookie|cookie|authorization|proxy-authorization|x-api-key|x-auth-token)$", re.I)
@@ -92,12 +93,17 @@ class WebScanner:
         self._cookies: dict[str, tuple[str, str]] = {}          # cookie name -> (Set-Cookie value, url)
         self._cleartext_forms: list[str] = []
         self._comments: list[str] = []
+        self._skips: dict[str, int] = {}             # reason -> count (shown in the Attack surface tab)
+        self._other_hosts: dict[str, int] = {}       # hosts linked from the app that were not crawled
+        self._oos_redirects: dict[str, int] = {}     # hosts the app redirected to that are outside the scope
+        self._host = (urlsplit(self.target).hostname or "").lower()
+        self._root_hash = ""
         self.endpoints = d.EndpointMap()
         self.snap = Snapshot(options.get("snapshot_dir"))
 
     # ------------------------------------------------------------ transport
     async def _request(self, method: str, url: str, max_bytes: int = 3_000_000,
-                       headers: Optional[dict] = None) -> Optional[httpx.Response]:
+                       headers: Optional[dict] = None, data: Optional[dict] = None) -> Optional[httpx.Response]:
         hops = 0
         while True:
             if self.cancelled():
@@ -105,6 +111,9 @@ class WebScanner:
             try:
                 scope.check(url, self.rules)
             except scope.OutOfScope as e:
+                if hops:
+                    h = urlsplit(url).netloc
+                    self._oos_redirects[h] = self._oos_redirects.get(h, 0) + 1
                 self.log(f"skip (out of scope): {url} - {e}")
                 return None
             if self.res.requests >= self.max_requests:
@@ -117,7 +126,7 @@ class WebScanner:
             self.res.requests += 1
             try:
                 async with self.sem:
-                    req = self.client.build_request(method, url, headers=headers)
+                    req = self.client.build_request(method, url, headers=headers, data=data)
                     r = await self.client.send(req, stream=True)
                     body = b""
                     if method != "HEAD":
@@ -176,21 +185,44 @@ class WebScanner:
         return False
 
     # ------------------------------------------------------------ crawl
+    def _skip(self, reason: str) -> None:
+        self._skips[reason] = self._skips.get(reason, 0) + 1
+
+    def _same_site(self, url: str) -> bool:
+        """Same host as the target, whatever the scheme or port (http->https redirects, :8443 apps). With the
+        'crawl other allowlisted hosts' option, any host in the scope allowlist counts too."""
+        host = (urlsplit(url).hostname or "").lower()
+        if host and host == self._host:
+            return True
+        return bool(self.opt.get("crawl_other_hosts")) and scope.in_scope(url, self.rules)
+
     def _enqueue(self, url: str, source: str, depth: int) -> None:
-        """Record a same-origin URL as an endpoint and queue it for crawling unless it is static, unsafe, or a repeat."""
+        """Record a same-site URL as an endpoint and queue it for crawling unless it is static, unsafe, or a repeat."""
         url = d.strip_fragment(url)
-        if not url.startswith(("http://", "https://")) or d.origin(url) != self._org or d.STATIC.search(url):
+        if not url.startswith(("http://", "https://")):
             return
+        if not self._same_site(url):
+            h = urlsplit(url).netloc.lower()
+            self._other_hosts[h] = self._other_hosts.get(h, 0) + 1
+            return self._skip("other host")
+        if d.STATIC.search(url):
+            return self._skip("static file")
         if d.SCRIPT.search(url):
             self._queue_script(url)
             return
         unsafe = bool(d.UNSAFE_LINK.search(url))
         self.endpoints.add("GET", url, source=source, **({"not_followed": "state-changing name"} if unsafe else {}))
-        if unsafe or url in self._seen or "{x}" in url or depth > self._max_depth:
+        if unsafe:
+            return self._skip("state-changing name (logout, delete, reset...)")
+        if url in self._seen:
             return
+        if "{x}" in url:
+            return self._skip("template URL from JavaScript")
+        if depth > self._max_depth:
+            return self._skip("too deep")
         k = d.pattern_key(url)
         if self._patterns.get(k, 0) >= self._per_pattern:
-            return
+            return self._skip("same page with another id")
         self._patterns[k] = self._patterns.get(k, 0) + 1
         self._seen.add(url)
         self._queue.append((url, depth))
@@ -201,7 +233,7 @@ class WebScanner:
         self._scripts_seen.add(full)
         self.res.scripts.append(full)
         self._add(match_js_url(full))
-        if d.origin(full) == self._org or scope.in_scope(full, self.rules):
+        if self._same_site(full) or scope.in_scope(full, self.rules):
             self._script_jobs.append(full)
 
     async def _seed(self) -> None:
@@ -219,7 +251,7 @@ class WebScanner:
         done, tried = 0, set()
         while sitemaps and done < 6 and not self.cancelled():
             u = sitemaps.pop(0)
-            if d.origin(u) != self._org or u in tried:
+            if not self._same_site(u) or u in tried:
                 continue
             tried.add(u)
             done += 1
@@ -278,7 +310,7 @@ class WebScanner:
         self._pages_seen.append((final, r.headers))
         self._check_forms(soup, final)
         for f in d.html_forms(soup, final):
-            if d.origin(f["action"]) != self._org:
+            if not self._same_site(f["action"]):
                 continue
             self.endpoints.add(f["method"], f["action"], f["params"], "form", login=f["has_password"], upload=f["has_file"],
                                csrf_token=f["csrf_token"] if f["method"] == "POST" else None)
@@ -314,7 +346,6 @@ class WebScanner:
 
     async def _crawl(self) -> None:
         start = d.strip_fragment(self.target)
-        self._org = d.origin(start)
         self._queue, self._seen, self._patterns = [], set(), {}
         self._scripts_seen, self._script_jobs = set(), []
         self._per_pattern = int(self.opt.get("per_pattern", 3))
@@ -324,6 +355,10 @@ class WebScanner:
         self._queue.append((start, 0))
         self._patterns[d.pattern_key(start)] = 1
         await self._seed()
+        for path in (self.opt.get("extra_paths") or [])[:200]:  # operator-supplied start points
+            self._enqueue(urljoin(self.target, str(path).strip()), "start path", 1)
+        if self.opt.get("discover", self.mode == "active") and self.mode != "passive":
+            await self._discover()
         await self._drain(max_pages)
 
         # Scripts: library versions, and the endpoints they call (single-page apps keep their routes and API there).
@@ -340,7 +375,7 @@ class WebScanner:
                     return
                 text = (r.content or b"").decode("utf-8", "ignore")
                 self._add(match_js(text, urlsplit(u).path, u))
-                if d.origin(u) == self._org:
+                if self._same_site(u):
                     self.snap.save("script", u, r)
                 for p in d.js_endpoints(text):
                     self._enqueue(urljoin(u, p), "script", 2)
@@ -355,6 +390,115 @@ class WebScanner:
         self.log(f"crawl done: {len(self.res.pages)} pages, {len(self.res.scripts)} scripts, {len(self.endpoints)} endpoints"
                  f" ({sum(1 for e in self.res.endpoints if e['method'] != 'GET')} non-GET, "
                  f"{sum(1 for e in self.res.endpoints if e['params'])} with parameters)")
+
+    # ------------------------------------------------------------ logged-in crawl
+    async def _login(self) -> None:
+        """Log in through the app's own login form with a test account, so the crawl sees what a user sees.
+
+        Deterministic: fetch the login page, take the first form that has a password field, keep its hidden fields
+        (anti-CSRF tokens), put the username in the most likely user field, submit it once, and keep the session
+        cookies. The password is never stored or logged."""
+        url = urljoin(self.target, self.opt["login_url"])
+        r = await self._request("GET", url)
+        if r is None:
+            self.res.crawl_stats["login"] = "login page not reachable or out of scope"
+            return self.log("login: login page not reachable or out of scope")
+        soup = BeautifulSoup((r.content or b"").decode("utf-8", "ignore"), "html.parser")
+        form = next((f for f in soup.find_all("form") if f.find("input", attrs={"type": re.compile("^password$", re.I)})), None)
+        if form is None:
+            self.res.crawl_stats["login"] = f"no login form with a password field at {r.url}"
+            return self.log(f"login: no form with a password field at {r.url}")
+        fields, user_field, text_fields = {}, None, []
+        for el in form.find_all(["input", "select", "textarea"]):
+            name = el.get("name")
+            t = (el.get("type") or ("text" if el.name == "input" else el.name)).lower()  # <input> without type = text
+            if not name:
+                continue
+            if t == "password":
+                fields[name] = self.opt.get("login_password", "")
+            elif t in ("checkbox", "radio"):
+                if el.has_attr("checked"):
+                    fields[name] = el.get("value", "on")
+            elif t in ("submit", "button", "image", "reset", "file"):
+                continue
+            elif el.name == "select":
+                opt = el.find("option", selected=True) or el.find("option")
+                fields[name] = opt.get("value", opt.text) if opt else ""
+            else:
+                fields[name] = el.get("value", "")
+                if t in ("text", "email", "tel", "") or el.name == "textarea":
+                    text_fields.append(name)
+        user_field = next((n for n in text_fields if re.search(r"user|login|email|mail|name|account|uid|id$", n, re.I)),
+                          text_fields[0] if text_fields else None)
+        if user_field:
+            fields[user_field] = self.opt.get("login_user", "")
+        sub = form.find(["button", "input"], attrs={"type": re.compile("^(submit|image)$", re.I)})
+        if sub is not None and sub.get("name"):
+            fields[sub["name"]] = sub.get("value", "")
+        action = urljoin(str(r.url), form.get("action") or str(r.url))
+        method = (form.get("method") or "POST").upper()
+        if method != "POST":
+            action = action.split("?")[0] + "?" + urlencode(fields)
+        before = set(self.client.cookies.keys())
+        resp = await self._request("POST" if method == "POST" else "GET", action, data=fields if method == "POST" else None)
+        if resp is not None and resp.is_redirect and resp.headers.get("location"):
+            resp = await self._request("GET", urljoin(action, resp.headers["location"]))
+        # Success = the page we land on no longer shows a password form, and the session changed (new cookie or we left
+        # the login page). Checked on the page after the login redirect, not on the home page (which may never have a form).
+        landed = (resp.content or b"").lower().replace(b"'", b'"') if resp is not None else b""
+        still_form = b'type="password"' in landed
+        new = sorted(set(self.client.cookies.keys()) - before)
+        left_login = resp is not None and urlsplit(str(resp.url)).path != urlsplit(str(r.url)).path
+        ok = resp is not None and resp.status_code < 400 and not still_form and (bool(new) or left_login)
+        msg = (f"logged in as {self.opt.get('login_user')}" + (f" (new session cookie: {', '.join(new)})" if new else "")) if ok \
+            else "login failed: the app still shows its login form (check the test account, or paste a session cookie under Advanced)"
+        self.res.crawl_stats["login"] = msg
+        self.log("login: " + msg)
+
+    # ------------------------------------------------------------ content discovery
+    async def _discover(self) -> None:
+        """Try common unlinked paths (admin pages, APIs, docs, backups). GET only; soft-404s are filtered out."""
+        from .wordlist import PATHS
+        dir_base = await self._request("GET", urljoin(self.target, f"/eolscan-{uuid.uuid4().hex[:8]}/"))
+        dir_fp = (dir_base.status_code, len(dir_base.content or b"")) if dir_base is not None else None
+        stats = {"tried": 0, "found": 0, "protected": 0}
+        self.progress(0.1, f"guessing {len(PATHS)} common paths")
+
+        async def probe(path: str) -> None:
+            url = urljoin(self.target, path)
+            if d.UNSAFE_LINK.search(url) or url in self._seen or self.cancelled():
+                return
+            stats["tried"] += 1
+            r = await self._request("GET", url, max_bytes=400_000)
+            if r is None or r.status_code in (400, 404, 405, 410) or r.status_code >= 500 or self._looks_like_baseline(r):
+                return
+            body = r.content or b""
+            if dir_fp and r.status_code == dir_fp[0] and abs(len(body) - dir_fp[1]) <= max(32, dir_fp[1] * 0.03):
+                return
+            final = str(r.url)
+            if self._root_hash and hashlib.sha1(body).hexdigest() == self._root_hash and urlsplit(final).path != urlsplit(url).path:
+                return  # catch-all redirect back to the home page
+            if r.status_code in (401, 403) or (urlsplit(final).path != urlsplit(url).path and b"password" in body[:200_000].lower()):
+                stats["protected"] += 1
+                self.endpoints.add("GET", url, source="guessed", status=r.status_code,
+                                   protected="needs login" if r.status_code != 403 else "forbidden")
+                return
+            stats["found"] += 1
+            self._enqueue(final, "guessed", 1)
+
+        await asyncio.gather(*(probe(p) for p in PATHS))
+        self.res.crawl_stats["guessed"] = stats
+        self.log(f"content discovery: {stats['found']} of {stats['tried']} common paths exist"
+                 + (f", {stats['protected']} more need login or are forbidden" if stats["protected"] else ""))
+
+    def _finish_stats(self) -> None:
+        st = self.res.crawl_stats
+        st["skipped"] = dict(sorted(self._skips.items(), key=lambda kv: -kv[1]))
+        st["other_hosts"] = dict(sorted(self._other_hosts.items(), key=lambda kv: -kv[1])[:15])
+        st["out_of_scope_redirects"] = self._oos_redirects
+        st["queue_left"] = len(getattr(self, "_queue", []))
+        if st["queue_left"]:
+            st["hint"] = f"{st['queue_left']} more pages were waiting when the page limit was reached: raise Max pages."
 
     # ------------------------------------------------------------ probes
     async def _run_probe(self, p: dict) -> None:
@@ -665,12 +809,28 @@ class WebScanner:
                 self.target = "http://" + self.target[len("https://"):]
                 r = await self._request("GET", self.target)
             if r is None:
+                if self._oos_redirects:
+                    raise RuntimeError(
+                        f"the start page redirects to {', '.join(self._oos_redirects)}, which is outside the scope allowlist "
+                        "(often a single sign-on page). Add that host to the scope if you may test it, or log in another way "
+                        "(Advanced -> Cookie header).")
                 hint = " (is Burp running with its proxy listener on that address?)" if proxy else ""
                 raise RuntimeError(f"target not reachable or out of scope: {self.target}{hint}")
+            final = d.strip_fragment(str(r.url))
+            if final != d.strip_fragment(self.target):
+                self.log(f"start page redirected to {final}; crawling from there")
+                self.target = final
+            self._host = (urlsplit(self.target).hostname or "").lower()
+            self._root_hash = hashlib.sha1(r.content or b"").hexdigest()
             await self._baseline()
+            if self.opt.get("login_url") and self.opt.get("login_user") and not self.cancelled():
+                await self._login()
             await self._crawl()
             if self.opt.get("render_js") and not self.cancelled():
                 await self._browser_crawl()
+                await self._drain(int(self.opt.get("max_pages", 150)))  # pages only the rendered DOM linked to
+                self.res.endpoints = self.endpoints.to_list()
+            self._finish_stats()
             if self.mode in ("safe", "active") and not self.cancelled():
                 await self._cors_check()
                 await self._probes()

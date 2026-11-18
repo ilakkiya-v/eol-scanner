@@ -15,7 +15,7 @@ INDEX = """<!doctype html><html><head><title>Legacy QA App</title>
 <script src="/static/js/jquery.min.js"></script>
 <script src="/static/vendor/angular.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.18.1/moment.min.js"></script>
-</head><body ng-app><!-- TODO remove test user before go-live: qa_admin --><a href="/about">About</a><a href="/login">Login</a><a href="/app">Dashboard (SPA)</a><a href="/logout">Logout</a></body></html>"""
+</head><body ng-app><!-- TODO remove test user before go-live: qa_admin --><a href="/about">About</a><a href="/login">Login</a><a href="/app">Dashboard (SPA)</a><a href="/logout">Logout</a><a href="/index.php?page=about">Info</a><a href="/portal/home">Portal</a></body></html>"""
 LOGIN = """<html><body><form method="post" action="/login"><input name="user"><input type="password" name="pass"><button>Sign in</button></form></body></html>"""
 # A single-page app shell: the library is only loaded by JavaScript, so a plain HTTP crawl can't see it.
 SPA = """<!doctype html><html><head><title>Dashboard</title></head><body><div id="root">Loading…</div>
@@ -43,6 +43,7 @@ FILES = {
     "/robots.txt": ("text/plain", ROBOTS),
     "/sitemap.xml": ("application/xml", SITEMAP),
     "/v2/api-docs": ("application/json", OPENAPI),
+    "/backups": ("text/html", "<html><title>Backups</title><body>nightly</body></html>"),
     "/admin/": ("text/html", "<html><title>Admin</title><body>Admin console <form action='/admin/users' method='post'><input name='role'></form></body></html>"),
     "/static/js/jquery.min.js": ("application/javascript", JQ),
     "/static/vendor/angular.js": ("application/javascript", NG),
@@ -55,12 +56,34 @@ FILES = {
 }
 
 
+ROUTES = {"about": "contact", "contact": "faq", "faq": "team", "team": "about"}  # index.php?page=... (legacy routing)
+PORTAL_LOGIN = """<html><title>Portal sign in</title><body><form method="post" action="/portal/login">
+<input type="hidden" name="csrf" value="tok123"><input name="username"><input type="password" name="password">
+<input type="submit" name="go" value="Sign in"></form></body></html>"""
+PORTAL_HOME = """<html><title>Portal home</title><body><a href="/portal/reports?view=monthly">Reports</a>
+<a href="/portal/users/edit?id=7">Edit user</a><a href="/portal/logout">Sign out</a></body></html>"""
+
+
 class H(BaseHTTPRequestHandler):
     server_version = "Apache/2.2.15 (CentOS)"
     sys_version = ""
 
     def _send(self, body_only=False):
         path = self.path.split("?")[0]
+        query = self.path.split("?", 1)[1] if "?" in self.path else ""
+        logged_in = "SESSION=valid" in (self.headers.get("Cookie") or "")
+        if path.startswith("/portal/") and path != "/portal/login" and not logged_in:
+            return self._redirect("/portal/login")
+        if path == "/index.php" and query.startswith("page="):
+            page = query[5:]
+            nxt = ROUTES.get(page, "about")
+            FILES["/index.php"] = ("text/html", f"<html><title>{page}</title><body><a href='/index.php?page={nxt}'>{nxt}</a></body></html>")
+        if path == "/portal/login":
+            FILES[path] = ("text/html", PORTAL_LOGIN)
+        elif path == "/portal/home":
+            FILES[path] = ("text/html", PORTAL_HOME)
+        elif path in ("/portal/reports", "/portal/users/edit"):
+            FILES[path] = ("text/html", f"<html><title>{path}</title><body>ok</body></html>")
         if path in FILES:
             ctype, body = FILES[path]
             code = 200
@@ -87,8 +110,24 @@ class H(BaseHTTPRequestHandler):
         if not body_only:
             self.wfile.write(data)
 
+    def _redirect(self, to, cookie=None):
+        self.send_response(302)
+        self.send_header("Location", to)
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self):
         self._send()
+
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode()
+        from urllib.parse import parse_qs
+        f = {k: v[0] for k, v in parse_qs(body).items()}
+        if self.path == "/portal/login" and f.get("csrf") == "tok123" and f.get("username") == "qa_tester" and f.get("password") == "lab-only-pw":
+            return self._redirect("/portal/home", "SESSION=valid; Path=/; HttpOnly")
+        return self._redirect("/portal/login")
 
     def do_HEAD(self):
         self._send(body_only=True)

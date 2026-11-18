@@ -78,7 +78,7 @@ async def crawl(sc: "WebScanner") -> None:
         return
 
     rules, origin = sc.rules, f"{urlsplit(sc.target).scheme}://{urlsplit(sc.target).netloc}".lower()
-    max_pages = max(1, int(sc.opt.get("browser_pages", min(15, int(sc.opt.get("max_pages", 30))))))
+    max_pages = max(1, int(sc.opt.get("browser_pages", min(60, int(sc.opt.get("max_pages", 150))))))
     blocked: set[str] = set()
     api_calls: set[str] = set()
     script_urls: set[str] = set()
@@ -105,7 +105,7 @@ async def crawl(sc: "WebScanner") -> None:
         sc.res.requests += 1
         if request.resource_type in ("xhr", "fetch"):
             api_calls.add(f"{request.method} {url.split('?')[0]}")
-            if url.lower().startswith(origin):
+            if sc._same_site(url):  # noqa: SLF001
                 sc.endpoints.add(request.method, url, source="browser")
         await route.continue_()
 
@@ -127,6 +127,14 @@ async def crawl(sc: "WebScanner") -> None:
                                             accept_downloads=False, extra_http_headers=extra,
                                             user_agent=sc.client.headers.get("user-agent"))
             await ctx.route("**/*", gate)
+            # share the HTTP crawl's session (e.g. after the logged-in crawl's form login)
+            jar = [{"name": c.name, "value": c.value, "domain": c.domain, "path": c.path or "/"}
+                   for c in sc.client.cookies.jar if c.domain]
+            if jar:
+                try:
+                    await ctx.add_cookies(jar)
+                except PWError:
+                    pass
             page = await ctx.new_page()
             page.set_default_timeout(float(sc.opt.get("timeout", 10)) * 1000 * 2)
 
@@ -164,9 +172,9 @@ async def crawl(sc: "WebScanner") -> None:
                 links = await page.eval_on_selector_all("a[href]", "els => els.map(e => e.href)")
                 for href in links:
                     full = urljoin(page.url, href).split("#")[0]
-                    if full.lower().startswith(origin):
-                        sc.endpoints.add("GET", full, source="browser")
-                    if full.lower().startswith(origin) and full not in seen and not _SKIP_LINK.search(full):
+                    if sc._same_site(full):  # noqa: SLF001
+                        sc._enqueue(full, "browser", 1)  # noqa: SLF001 - the HTTP crawl visits these afterwards
+                    if sc._same_site(full) and full not in seen and not _SKIP_LINK.search(full):  # noqa: SLF001
                         seen.add(full)
                         queue.append(full)
                 sc.progress(0.4 + 0.05 * pages_done / max_pages, f"browser rendered {pages_done} pages")

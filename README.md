@@ -17,7 +17,7 @@ Finds **end-of-life and vulnerable components** in authorized web apps (live sca
 
 <sub>Screenshots show the bundled fake legacy app (<code>tests/fake_target.py</code>) and sample code (<code>tests/fixtures/legacyapp.zip</code>), not a real system.</sub>
 
-- **Web scan**: crawls the target (links, frames, forms, `robots.txt`, sitemaps, OpenAPI/Swagger documents and endpoints referenced from JavaScript) into an **attack-surface map** of every endpoint and parameter, fingerprints server, framework, CMS and JS-library versions from headers, HTML, JS banners, error pages and exposed lockfiles, then maps each one to its lifecycle (endoflife.date) and known CVEs (OSV.dev). It also checks for exposed files and consoles, risky HTTP methods, legacy TLS, missing security headers, cookie flags, permissive CORS and login forms over HTTP. An optional **headless-browser crawl** renders single-page apps so libraries loaded by JavaScript are found too.
+- **Web scan**: crawls the target (links, frames, forms, `robots.txt`, sitemaps, OpenAPI/Swagger documents, endpoints referenced from JavaScript, ~340 guessed common paths, and a **logged-in crawl** through the app's own login form with a test account) into an **attack-surface map** of every endpoint and parameter, fingerprints server, framework, CMS and JS-library versions from headers, HTML, JS banners, error pages and exposed lockfiles, then maps each one to its lifecycle (endoflife.date) and known CVEs (OSV.dev). It also checks for exposed files and consoles, risky HTTP methods, legacy TLS, missing security headers, cookie flags, permissive CORS and login forms over HTTP. An optional **headless-browser crawl** renders single-page apps so libraries loaded by JavaScript are found too.
 - **Code review**: upload `.zip`/`.tar.gz`. The tool parses npm, PyPI, Maven/Gradle, Composer, RubyGems, Go, NuGet, Dockerfile `FROM`, runtime pins, vendored JS and bundled JARs (via `pom.properties`), and flags risky legacy patterns plus injection-prone code (SQL, OS command, XSS, file paths, SSRF, XXE, open redirects) in Java, Python, PHP, JavaScript/Node, C#/ASP.NET and classic ASP. It **never executes** the code.
 - **AI review** (optional), for code and web scans:
   - **Code:** Claude reads the uploaded source and traces user input to dangerous code.
@@ -92,6 +92,24 @@ The gateway connection only works with gateways that speak the Anthropic Message
 Safe and Active also send two ordinary GETs with a foreign `Origin` header to check CORS. Every mode checks security headers, cookie flags and password forms on the pages it loads.
 
 **Headless-browser crawl** (optional, any mode): tick *Render pages in a headless browser* under Advanced. It needs `pip install -r requirements-browser.txt && playwright install chromium`, or the Docker build arg `WITH_BROWSER=1`. The browser's requests go through the same scope allowlist (out-of-scope requests are aborted, never sent), rate limit and request budget. Service workers and downloads are blocked.
+
+### AI safety: deterministic code decides, the AI advises
+
+Everything the AI reads comes from the systems under test, so it is treated as attacker-controlled (prompt injection).
+
+**What the AI cannot do:**
+- change the scope;
+- remove or re-score a rule finding;
+- send requests other than a few policy-checked GETs to pages the crawler already found;
+- read files outside its working folder;
+- run commands.
+
+**How its output is checked:**
+- AI findings must quote evidence that the scanner can find in the real crawl data or code. Otherwise they are capped in severity and marked *unverified*.
+- AI-written manual checks are linted for harmful requests.
+- Report text is cleaned of images and links that could leak data.
+
+See **[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)**.
 
 ### What this is and isn't
 

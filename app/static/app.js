@@ -179,6 +179,18 @@ async function newWeb() {
         <div><label>Max pages to crawl</label><input type="number" min="1" max="2000" name="max_pages" value="${esc(d.max_pages)}"></div>
         <div style="grid-column: span 2"><label class="check" style="margin-top:28px"><input type="checkbox" name="render_js" ${caps.browser ? "" : "disabled"}> Also render pages in a headless browser <span class="muted">(single-page apps; ${caps.browser ? "same scope and rate limits" : "not installed: pip install -r requirements-browser.txt, then playwright install chromium"})</span></label></div>
       </div>
+      <label class="check"><input type="checkbox" name="discover" checked> Guess common unlinked paths <span class="muted">(admin pages, APIs, docs, backups: ~340 GET requests, soft-404s filtered; Safe and Active only)</span></label>
+      <label class="check"><input type="checkbox" name="crawl_other_hosts"> Also crawl other allowlisted hosts the app links to <span class="muted">(otherwise only this host, on any port or scheme)</span></label>
+      <details class="adv"><summary>Logged-in crawl and extra start paths</summary>
+        <div class="hint">Most lab apps show little without a session. Give a <b>dedicated test account</b>: the scanner fills in the app's own login form once, keeps the session cookie, and never follows logout links. The password is used for this scan only and is never stored or logged. Or paste a session cookie under Advanced below.</div>
+        <div class="grid cols-3">
+          <div><label>Login page</label><input type="text" name="login_url" placeholder="/login or https://app.lab/login.jsp" autocomplete="off"></div>
+          <div><label>Test username</label><input type="text" name="login_user" autocomplete="off"></div>
+          <div><label>Test password</label><input type="password" name="login_password" autocomplete="new-password"></div>
+        </div>
+        <label>Extra start paths <span class="muted">(one per line: pages you know exist but nothing links to)</span></label>
+        <textarea name="extra_paths" rows="3" placeholder="/admin/reports.jsp&#10;/legacy/index.php?page=export"></textarea>
+      </details>
     </section>
     <section class="panel step"><h2><span class="num" aria-hidden="true">3</span>Extra engines <span class="muted small">optional</span></h2>
       <div class="engines">
@@ -194,7 +206,7 @@ async function newWeb() {
       </div>
       <details class="adv"><summary>Advanced: authenticated crawl, rate limits, TLS, proxy</summary>
         <div class="grid cols-3">
-          <div><label>Requests / sec</label><input type="number" step="0.5" min="0.2" name="rate_per_sec" value="${esc(d.rate_per_sec)}"></div>
+          <div><label>Requests / sec</label><input type="number" step="any" min="0.2" name="rate_per_sec" value="${esc(d.rate_per_sec)}"></div>
           <div><label>Concurrency</label><input type="number" min="1" max="16" name="concurrency" value="${esc(d.concurrency)}"></div>
           <div><label>Timeout (s)</label><input type="number" min="2" name="timeout" value="${esc(d.timeout)}"></div>
         </div>
@@ -239,7 +251,10 @@ async function newWeb() {
       attest: !!fd.get("attest"), headers, cookies: fd.get("cookies") || "", rate_per_sec: +fd.get("rate_per_sec"),
       concurrency: +fd.get("concurrency"), max_pages: +fd.get("max_pages"), timeout: +fd.get("timeout"),
       verify_tls: !!fd.get("verify_tls"), use_proxy: !!fd.get("use_proxy"), render_js: !!fd.get("render_js"),
-      burp_proxy: !!fd.get("burp_proxy"), burp_scan: !!fd.get("burp_scan"), ai_review: !!fd.get("ai_review") };
+      burp_proxy: !!fd.get("burp_proxy"), burp_scan: !!fd.get("burp_scan"), ai_review: !!fd.get("ai_review"),
+      discover: !!fd.get("discover"), crawl_other_hosts: !!fd.get("crawl_other_hosts"),
+      login_url: (fd.get("login_url") || "").trim(), login_user: (fd.get("login_user") || "").trim(), login_password: fd.get("login_password") || "",
+      extra_paths: (fd.get("extra_paths") || "").split("\n").map((x) => x.trim()).filter(Boolean) };
     store.set("lastScan", { target: body.target, operator: body.operator, ticket: body.ticket });
     f.querySelector("button[type=submit]").disabled = true;
     try {
@@ -514,6 +529,7 @@ function renderComponents(body, comps, inv, running) {
 const seenAt = (i) => esc(((i.locations || [])[0] || (i.sources || []).join(", ")).replace(/^(https?:\/\/[^/]+)\/eolscan-[0-9a-f]+\.html$/, "$1 (error page)"));
 
 const mcHtml = (mc) => `<div class="poc"><div class="poc-h"><b>Manual check (PoC)</b><span class="muted small">benign probe · run only in the authorized lab</span></div>
+  ${(mc.warnings || []).length ? `<div class="notice err small" role="alert"><b>Review before running — the scanner's own check flagged this request:</b><ul>${mc.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>AI-written requests can be influenced by the content of the app under test.</div>` : ""}
   ${mc.request ? `<pre><button class="copy ghost" type="button">Copy</button><code>${esc(mc.request)}</code></pre>` : ""}
   ${mc.probe || mc.expected ? `<dl class="kv small">${mc.probe ? `<dt>Probe</dt><dd>${esc(mc.probe)}</dd>` : ""}${mc.expected ? `<dt>Confirms it</dt><dd>${esc(mc.expected)}</dd>` : ""}</dl>` : ""}
   ${(mc.steps || []).length ? `<ol class="tests small">${mc.steps.map((t) => `<li>${esc(t)}</li>`).join("")}</ol>` : ""}</div>`;
@@ -536,9 +552,10 @@ function findingHtml(f) {
   const cves = f.vulns || [];
   return `<details class="finding" data-id="${esc(f.id)}">
   <summary>${sevBadge(f.severity)}<div><div class="t">${esc(f.title)}</div><div class="loc">${esc(f.location || "")}</div></div>
-    <div class="meta row">${verdictBadge}${f.manual_check ? `<span class="badge poc-b">PoC</span>` : ""}${f.vuln_count ? `<span class="badge">${f.vuln_count} CVEs</span>` : ""}${f.source_tool ? `<span class="badge">${esc(f.source_tool)}</span>` : ""}${f.confidence ? `<span class="badge">${esc(f.confidence)} conf.</span>` : ""}</div></summary>
+    <div class="meta row">${f.evidence_check ? `<span class="badge ${f.evidence_check.status === "verified" ? "verdict good" : "warn"}">${f.evidence_check.status === "verified" ? "evidence ✓" : "unverified"}</span>` : ""}${verdictBadge}${f.manual_check ? `<span class="badge poc-b">PoC</span>` : ""}${f.vuln_count ? `<span class="badge">${f.vuln_count} CVEs</span>` : ""}${f.source_tool ? `<span class="badge">${esc(f.source_tool)}</span>` : ""}${f.confidence ? `<span class="badge">${esc(f.confidence)} conf.</span>` : ""}</div></summary>
   <div class="body">
-    ${v ? `<div class="notice ${v === "confirmed" ? "err" : v === "likely false positive" ? "ok" : ""}"><b>AI review: ${esc(v)}</b> — ${esc(f.ai_verdict.reason || "")}</div>` : ""}
+    ${v ? `<div class="notice ${v === "confirmed" ? "err" : v === "likely false positive" ? "ok" : ""}"><b>AI review: ${esc(v)}</b> — ${esc(f.ai_verdict.reason || "")} <span class="muted small">(an opinion: the finding itself is unchanged)</span></div>` : ""}
+    ${f.evidence_check ? `<div class="notice ${f.evidence_check.status === "verified" ? "ok" : "err"} small"><b>${f.evidence_check.status === "verified" ? "Evidence checked by the scanner" : "Evidence not confirmed by the scanner"}</b> — ${esc(f.evidence_check.detail || "")}${f.severity_from_ai ? `. The AI rated this <b>${esc(f.severity_from_ai)}</b>; shown as <b>${esc(f.severity)}</b> until a person confirms it.` : ""}</div>` : ""}
     ${comp && lc.status ? `<h3>Lifecycle</h3><dl class="kv">
       <dt>Status</dt><dd>${statusBadge(lc.status)}${lc.curated ? ' <span class="muted small">(curated data)</span>' : ""}</dd>
       <dt>Product / version</dt><dd>${esc(f.product)} ${esc(f.version || "?")}${f.package && f.package !== f.product ? ` <span class="muted">(${esc(f.ecosystem)}: ${esc(f.package)})</span>` : ""}</dd>
@@ -615,7 +632,19 @@ function renderSurface(body, s) {
   const flags = (e) => [e.login ? `<span class="badge">login form</span>` : "", e.upload ? `<span class="badge">file upload</span>` : "",
     e.method === "POST" && e.csrf_token === false ? `<span class="badge warn">no anti-CSRF token</span>` : "",
     e.not_followed ? `<span class="badge" title="${esc(e.not_followed)}">not crawled</span>` : "", e.auth ? `<span class="badge">auth</span>` : ""].join("");
+  const cs = s.crawl_stats || {};
+  const skipped = Object.entries(cs.skipped || {});
+  const others = Object.entries(cs.other_hosts || {});
+  const oos = Object.keys(cs.out_of_scope_redirects || {});
   body.innerHTML = `
+  ${Object.keys(cs).length ? `<div class="panel"><h2>How the crawl went</h2><dl class="kv small">
+    ${cs.login ? `<dt>Login</dt><dd>${/^logged in/.test(cs.login) ? `<span style="color:var(--ok)">✓ ${esc(cs.login)}</span>` : `<span style="color:var(--crit)">✗ ${esc(cs.login)}</span>`}</dd>` : ""}
+    ${cs.guessed ? `<dt>Guessed paths</dt><dd>${cs.guessed.found} of ${cs.guessed.tried} common paths exist${cs.guessed.protected ? `, ${cs.guessed.protected} more need login or are forbidden` : ""}</dd>` : ""}
+    ${skipped.length ? `<dt>Not followed</dt><dd>${skipped.map(([k, v]) => `${v} × ${esc(k)}`).join(" · ")}</dd>` : ""}
+    ${others.length ? `<dt>Other hosts linked</dt><dd>${others.map(([h, n]) => `<code>${esc(h)}</code> (${n})`).join(", ")}<div class="muted">Not crawled. If you may test them, add them to the scope and tick “Also crawl other allowlisted hosts”.</div></dd>` : ""}
+    ${oos.length ? `<dt>Redirected outside scope</dt><dd>${oos.map((h) => `<code>${esc(h)}</code>`).join(", ")} <span class="muted">(often single sign-on: use the logged-in crawl or a session cookie)</span></dd>` : ""}
+    ${cs.hint ? `<dt>Tip</dt><dd>${esc(cs.hint)}</dd>` : ""}
+  </dl></div>` : ""}
   ${s.burp && !s.burp.error ? `<div class="notice ok"><b>Burp Suite scan ${esc(s.burp.status || "")}</b> · task ${esc(s.burp.task_id)} · ${s.burp.issues} issue types imported into Web findings${s.burp.metrics ? ` · ${esc(s.burp.metrics.crawl_requests_made || 0)} crawl / ${esc(s.burp.metrics.audit_requests_made || 0)} audit requests` : ""}. Open Burp's Dashboard for the full task.</div>` : ""}
   <div class="panel"><div class="row between"><h2>Endpoints <span class="muted small">(${eps.length})</span></h2>
     ${eps.length ? `<div class="row tools"><select id="em" aria-label="Method"><option value="">All methods</option>${methods.map((m) => `<option>${esc(m)}</option>`).join("")}</select>
@@ -775,7 +804,7 @@ async function settings() {
     <div class="row"><button id="saveBurp">Save</button><button class="ghost" id="testBurp">Test connection</button><span id="burpTest" class="small"></span></div></div>
 
   <div class="panel"><h2>Scan defaults</h2><div class="grid cols-3">
-    <div><label>Requests / sec</label><input type="number" step="0.5" id="d_rate" value="${esc(s.scan_defaults.rate_per_sec)}"></div>
+    <div><label>Requests / sec</label><input type="number" step="any" min="0.2" id="d_rate" value="${esc(s.scan_defaults.rate_per_sec)}"></div>
     <div><label>Concurrency</label><input type="number" id="d_conc" value="${esc(s.scan_defaults.concurrency)}"></div>
     <div><label>Max pages</label><input type="number" id="d_pages" value="${esc(s.scan_defaults.max_pages)}"></div>
     <div><label>Timeout (s)</label><input type="number" id="d_to" value="${esc(s.scan_defaults.timeout)}"></div></div>

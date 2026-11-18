@@ -66,6 +66,12 @@ class WebScanIn(BaseModel):
     burp_proxy: Optional[bool] = None   # send the crawl through Burp's proxy listener
     burp_scan: Optional[bool] = None    # ask Burp Suite Pro (REST API) to crawl + audit the target too
     ai_review: Optional[bool] = None    # start the AI web review when the scan finishes
+    discover: Optional[bool] = None     # guess common unlinked paths (default: on in Active mode)
+    crawl_other_hosts: Optional[bool] = None  # also crawl other allowlisted hosts the app links to
+    extra_paths: list[str] = []         # extra start paths/URLs
+    login_url: str = ""                 # logged-in crawl: login page + test account (password never stored)
+    login_user: str = ""
+    login_password: str = ""
 
 
 class ScopeIn(BaseModel):
