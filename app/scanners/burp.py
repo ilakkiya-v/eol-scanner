@@ -77,7 +77,8 @@ def test(cfg: dict) -> dict:
     return {"ok": True, "issue_definitions": n, "seconds": round(time.time() - t, 1), "key_set": bool(os.environ.get("BURP_API_KEY"))}
 
 
-def scan_request(target: str, mode: str, cfg: dict, exclude: Optional[list[str]] = None) -> dict:
+def scan_request(target: str, mode: str, cfg: dict, exclude: Optional[list[str]] = None,
+                 login: Optional[tuple[str, str]] = None) -> dict:
     p = urlsplit(target)
     origin = f"{p.scheme}://{p.netloc}/"
     names = (cfg.get("scan_configs") or {}).get(mode) or DEFAULT_CONFIGS.get(mode) or DEFAULT_CONFIGS["safe"]
@@ -85,16 +86,20 @@ def scan_request(target: str, mode: str, cfg: dict, exclude: Optional[list[str]]
             "scope": {"type": "SimpleScope", "include": [{"rule": origin, "type": "SimpleScopeDef"}],
                       "exclude": [{"rule": u, "type": "SimpleScopeDef"} for u in (exclude or [])[:50]]},
             "scan_configurations": [{"type": "NamedConfiguration", "name": n} for n in names]}
+    if login and login[0]:
+        # Without this, Burp's crawler fills login forms with random values and never gets past the login page.
+        body["application_logins"] = [{"type": "UsernameAndPasswordLogin", "username": login[0], "password": login[1]}]
     if cfg.get("resource_pool"):
         body["resource_pool"] = cfg["resource_pool"]
     return body
 
 
-def start(target: str, mode: str, cfg: dict, rules: Optional[dict] = None, exclude: Optional[list[str]] = None) -> str:
+def start(target: str, mode: str, cfg: dict, rules: Optional[dict] = None, exclude: Optional[list[str]] = None,
+          login: Optional[tuple[str, str]] = None) -> str:
     scope.check(target, rules)  # never ask Burp to scan anything outside this app's allowlist
     try:
         with _client() as c:
-            r = c.post(_base(cfg) + "/scan", json=scan_request(target, mode, cfg, exclude))
+            r = c.post(_base(cfg) + "/scan", json=scan_request(target, mode, cfg, exclude, login))
     except httpx.HTTPError as e:
         raise _err(e, cfg) from e
     if r.status_code != 201 or not r.headers.get("location"):
@@ -168,11 +173,14 @@ def issues_to_findings(data: dict, origin_hint: str = "") -> list[dict]:
 
 
 def run(target: str, mode: str, cfg: dict, rules: dict, log: Callable[[str], None],
-        progress: Callable[[float, str], None], cancelled: Callable[[], bool], exclude: Optional[list[str]] = None) -> dict:
+        progress: Callable[[float, str], None], cancelled: Callable[[], bool], exclude: Optional[list[str]] = None,
+        login: Optional[tuple[str, str]] = None) -> dict:
     """Start a Burp scan, wait for it, and return {task_id, status, findings, metrics}."""
-    task = start(target, mode, cfg, rules, exclude)
+    task = start(target, mode, cfg, rules, exclude, login)
     names = (cfg.get("scan_configs") or {}).get(mode) or DEFAULT_CONFIGS.get(mode)
-    log(f"Burp scan started (task {task}; configurations: {', '.join(names or [])})")
+    log(f"Burp scan started (task {task}; configurations: {', '.join(names or [])}"
+        + (f"; logs in as {login[0]}" if login and login[0] else "; no login: Burp will try login forms with random values")
+        + ")")
     deadline = time.time() + float(cfg.get("max_minutes", 120)) * 60
     data: dict = {}
     last_note = ""

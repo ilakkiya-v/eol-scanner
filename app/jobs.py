@@ -76,8 +76,10 @@ def _run_web(sid: str, target: str, mode: str, options: dict) -> None:
             progress(0.55, "Burp Suite scan starting")
             try:
                 exclude = [e["url"] for e in res.endpoints if e.get("not_followed")]
+                login = (options.get("login_user") or "", options.get("login_password") or "") \
+                    if options.get("login_user") else None  # Burp's crawler logs in with the same test account
                 br = burp.run(scanner.target, mode, burp_cfg, rules, log, lambda p, m="": progress(0.55 + 0.35 * p, m),
-                              cancelled, exclude)
+                              cancelled, exclude, login)
                 burp_findings = br["findings"]
                 burp_info = {"task_id": br["task_id"], "status": br["status"], "issues": len(burp_findings),
                              "metrics": br["metrics"]}

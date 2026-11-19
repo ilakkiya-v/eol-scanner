@@ -658,7 +658,7 @@ function renderSurface(body, s) {
     ${eps.length ? `<div class="row tools"><select id="em" aria-label="Method"><option value="">All methods</option>${methods.map((m) => `<option>${esc(m)}</option>`).join("")}</select>
       <label class="check" style="margin:0"><input type="checkbox" id="ep"> with parameters</label>
       <input type="text" id="eq" placeholder="Filter…" aria-label="Filter endpoints"><button type="button" class="ghost" id="copyUrls">Copy URLs</button></div>` : ""}</div>
-    ${eps.length ? `<div class="hint">Everything the crawl found: links, forms, JavaScript calls, robots.txt, sitemaps and API documents. "Copy URLs" gives a list you can paste into Burp (Target → Site map, or a new scan's URL list).</div>
+    ${eps.length ? `<div class="hint">Everything the crawl found: links, forms, JavaScript calls, robots.txt, sitemaps and API documents. POST forms and other non-GET endpoints are only recorded, never sent (status “not sent”). "Copy URLs" gives a list you can paste into Burp (Target → Site map, or a new scan's URL list).</div>
     <div class="table-wrap"><table class="eps"><thead><tr><th>Method</th><th>Path</th><th>Parameters</th><th class="hide-sm">Found via</th><th>Status</th></tr></thead><tbody id="epb"></tbody></table></div>`
     : `<div class="muted">No endpoint map for this scan (scans made before this version show the page list below).</div>`}</div>
   <div class="grid cols-2">
@@ -684,7 +684,9 @@ function renderSurface(body, s) {
     $("#epb").innerHTML = view().slice(0, 2000).map((e) => `<tr><td><span class="method ${esc(e.method)}">${esc(e.method)}</span></td>
       <td style="word-break:break-all"><span class="mono small">${esc(e.url.replace(/^https?:\/\/[^/]+/, "") || "/")}</span>${e.title ? `<div class="muted small">${esc(e.title)}</div>` : ""}<div>${flags(e)}</div></td>
       <td>${(e.params || []).map((p) => `<code class="param">${esc(p)}</code>`).join(" ")}</td>
-      <td class="hide-sm small muted">${esc((e.sources || []).join(", "))}</td><td class="mono small">${esc(e.status || "")}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">Nothing matches.</td></tr>`;
+      <td class="hide-sm small muted">${esc((e.sources || []).join(", "))}</td><td class="mono small">${e.status ? esc(e.status)
+        : e.method !== "GET" ? `<span class="muted" title="Forms and API writes are recorded, never submitted by the crawler">not sent</span>`
+        : e.not_followed ? `<span class="muted">skipped</span>` : ""}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">Nothing matches.</td></tr>`;
   };
   $("#em").onchange = $("#ep").onchange = draw; $("#eq").oninput = draw; draw();
   $("#copyUrls").onclick = async () => {

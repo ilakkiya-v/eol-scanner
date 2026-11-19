@@ -507,21 +507,33 @@ class WebScanner:
         self.log(f"login: {method} {action} with {shown}")
         if method != "POST":
             action = action.split("?")[0] + "?" + urlencode(fields)
-        before = set(self.client.cookies.keys())
+        before = {c.name: c.value for c in self.client.cookies.jar}
         resp = await self._request("POST" if method == "POST" else "GET", action, data=fields if method == "POST" else None)
         if resp is not None and resp.is_redirect and resp.headers.get("location"):
             resp = await self._request("GET", urljoin(action, resp.headers["location"]))
         if resp is not None and resp.status_code < 400:
             self._start_seeds.append(d.strip_fragment(str(resp.url)))  # the page the app lands on after login
-        # Success = the page we land on no longer shows a password form, and the session changed (new cookie or we left
-        # the login page). Checked on the page after the login redirect, not on the home page (which may never have a form).
-        landed = (resp.content or b"").lower().replace(b"'", b'"') if resp is not None else b""
-        still_form = b'type="password"' in landed
-        new = sorted(set(self.client.cookies.keys()) - before)
-        left_login = resp is not None and urlsplit(str(resp.url)).path != urlsplit(str(r.url)).path
-        ok = resp is not None and resp.status_code < 400 and not still_form and (bool(new) or left_login)
-        msg = (f"logged in as {self.opt.get('login_user')}" + (f" (new session cookie: {', '.join(new)})" if new else "")) if ok \
-            else "login failed: the app still shows its login form (check the test account, or paste a session cookie under Advanced)"
+        # Success = the page we land on (after any redirect) no longer shows a password box and no "invalid login"
+        # message. Many PHP/JSP apps set the session cookie before login and post back to the same URL with a 200, so a
+        # new cookie or a different URL is reported as extra information, not required.
+        landed = (resp.content or b"")[:400_000].lower() if resp is not None else b""
+        still_form = bool(re.search(rb"type\s*=\s*[\"']?password", landed))
+        error = re.search(rb"invalid (?:user|login|password|credential|e-?mail)|incorrect (?:user|login|password|credential)|"
+                          rb"(?:login|logon|sign[- ]?in|authentication) (?:failed|unsuccessful|error)|wrong (?:user|password)|"
+                          rb"bad (?:username|password|credentials)", landed)
+        after = {c.name: c.value for c in self.client.cookies.jar}
+        changed = sorted(k for k in after if before.get(k) != after[k])
+        ok = resp is not None and resp.status_code < 400 and not still_form and not error
+        if ok:
+            msg = f"logged in as {self.opt.get('login_user')}" + (f" (session cookie set: {', '.join(changed)})" if changed else "")
+        elif resp is None:
+            msg = "login failed: no response to the login request"
+        elif error:
+            said = re.split(rb"[<\n.!]", landed[error.start(): error.start() + 120])[0].decode("utf-8", "ignore").strip()
+            msg = f"login failed: the app says \"{said}\" (check the test account)"
+        else:
+            msg = ("login failed: the app still shows its login form (check the test account; if the fields are unusual, "
+                   "fill in 'Login form fields', or paste a session cookie under Advanced)")
         self.res.crawl_stats["login"] = msg
         self.log("login: " + msg)
 

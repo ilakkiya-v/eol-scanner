@@ -532,7 +532,7 @@ def test_burp_rest_scan():
             pass
         assert not [c for c in calls if c[0] == "POST"]
         res = burp.run("http://127.0.0.1:9/app", "safe", cfg, rules, lambda m: None, lambda p, m="": None, lambda: False,
-                       exclude=["http://127.0.0.1:9/logout"])
+                       exclude=["http://127.0.0.1:9/logout"], login=("qa.tester@lab.example", "lab-only-pw"))
     finally:
         srv.shutdown()
     body = [c for c in calls if c[0] == "POST"][0][2]
@@ -540,6 +540,8 @@ def test_burp_rest_scan():
     assert body["scope"]["include"] == [{"rule": "http://127.0.0.1:9/", "type": "SimpleScopeDef"}]
     assert body["scope"]["exclude"][0]["rule"] == "http://127.0.0.1:9/logout"
     assert [c["name"] for c in body["scan_configurations"]] == burp.DEFAULT_CONFIGS["safe"]
+    assert body["application_logins"] == [{"type": "UsernameAndPasswordLogin", "username": "qa.tester@lab.example",
+                                            "password": "lab-only-pw"}]   # Burp's crawler logs in instead of guessing
     assert res["status"] == "succeeded" and len(res["findings"]) == 1
     f = res["findings"][0]
     assert f["severity"] == "high" and f["cwe"] == ["CWE-79"] and f["kb"] == "xss" and len(f["locations"]) == 2
@@ -768,6 +770,29 @@ def test_login_legacy_form_patterns():
     # /lab/home bounced to the login page when anonymous; after login the crawl must start from it, not the login page
     assert "/lab/home" in a["pages"] and "/lab/records" in a["pages"], a["pages"]
     assert not any("lab-only-pw" in l for l in logs)
+
+
+def test_login_same_page_php_style():
+    """Session cookie exists before login, login posts back to the same page and answers 200: still a success."""
+    import asyncio
+    from app.scanners.web import WebScanner
+    srv = _serve_fake_target()
+    base = f"http://127.0.0.1:{srv.server_port}"
+    try:
+        def run(pw):
+            sc = WebScanner(base + "/mail/index.php", "passive", {"rate_per_sec": 500, "max_pages": 20, "login_url": "/mail/index.php",
+                            "login_user": "qa.tester@lab.example", "login_password": pw},
+                            {"allow": ["127.0.0.1"], "deny": []}, lambda m: None, lambda p, m="": None, lambda: False)
+            r = asyncio.run(sc.run())
+            return r.crawl_stats, {p.replace(base, "") for p in r.pages}
+        good, pages = run("lab-only-pw")
+        bad, _ = run("wrong")
+    finally:
+        srv.shutdown()
+    assert good["login"].startswith("logged in"), good
+    assert "/mail/inbox.php?folder=new" in pages, pages
+    assert "username=<username>, passwd=<password>, submit=Login" in good["login_request"], good["login_request"]
+    assert bad["login"].startswith("login failed") and "invalid username or password" in bad["login"], bad
 
 
 if __name__ == "__main__":

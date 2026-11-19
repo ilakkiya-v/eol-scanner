@@ -75,6 +75,14 @@ LAB_C = """<html><body><div id="box">User <input id="u"> Password <input type="p
 <a href="#" onclick="post('/lab/login.do', {username: u.value, passwd: p.value, jxn: 'login'})">Log in</a></div></body></html>"""
 
 
+# PHP-style mail app: session cookie set BEFORE login, login posts back to the same URL and answers 200 (no redirect)
+MAIL_FORM = """<html><title>Digital Mail Center</title><body>{err}<form method="post" action="index.php">
+<input type="text" name="username"><input type="password" name="passwd"><input type="submit" name="submit" value="Login">
+</form></body></html>"""
+MAIL_INBOX = "<html><title>Inbox</title><body>Inbox <a href='/mail/inbox.php?folder=new'>New mail</a></body></html>"
+MAIL_SESSIONS: set = set()
+
+
 class H(BaseHTTPRequestHandler):
     server_version = "Apache/2.2.15 (CentOS)"
     sys_version = ""
@@ -83,6 +91,8 @@ class H(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         query = self.path.split("?", 1)[1] if "?" in self.path else ""
         logged_in = "SESSION=valid" in (self.headers.get("Cookie") or "")
+        if path.startswith("/mail/"):
+            return self._mail(path)
         if path in ("/lab/a", "/lab/b", "/lab/c"):
             FILES[path] = ("text/html", {"/lab/a": LAB_A, "/lab/b": LAB_B, "/lab/c": LAB_C}[path])
         if path == "/lab/home":
@@ -135,6 +145,38 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def _mail_sid(self):
+        import re as _re
+        m = _re.search(r"MAILSESS=(\w+)", self.headers.get("Cookie") or "")
+        return m.group(1) if m else None
+
+    def _html(self, body, cookie=None):
+        data = body.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _mail(self, path, form=None):
+        import uuid as _uuid
+        sid = self._mail_sid()
+        new = None if sid else f"MAILSESS={_uuid.uuid4().hex[:10]}; Path=/"
+        if form is not None and path == "/mail/index.php":
+            if form.get("username") == "qa.tester@lab.example" and form.get("passwd") == "lab-only-pw" and form.get("submit") == "Login" and sid:
+                MAIL_SESSIONS.add(sid)
+                return self._html(MAIL_INBOX)
+            return self._html(MAIL_FORM.format(err="<p>Invalid username or password</p>"))
+        if path == "/mail/inbox.php":
+            if sid not in MAIL_SESSIONS:
+                return self._redirect("/mail/index.php")
+            return self._html("<html><title>New mail</title><body>3 messages</body></html>")
+        if sid in MAIL_SESSIONS:
+            return self._html(MAIL_INBOX)
+        return self._html(MAIL_FORM.format(err=""), new)
+
     def do_GET(self):
         self._send()
 
@@ -142,6 +184,8 @@ class H(BaseHTTPRequestHandler):
         body = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode()
         from urllib.parse import parse_qs
         f = {k: v[0] for k, v in parse_qs(body).items()}
+        if self.path.startswith("/mail/"):
+            return self._mail(self.path.split("?")[0], f)
         if self.path == "/portal/login" and f.get("csrf") == "tok123" and f.get("username") == "qa_tester" and f.get("password") == "lab-only-pw":
             return self._redirect("/portal/home", "SESSION=valid; Path=/; HttpOnly")
         if self.path == "/lab/login.do":
