@@ -750,10 +750,12 @@ def test_login_legacy_form_patterns():
     logs = []
     try:
         def login(page, **extra):
-            sc = WebScanner(base + "/lab/home", "passive", {"rate_per_sec": 500, "max_pages": 5, "login_url": page,
+            sc = WebScanner(base + "/lab/home", "passive", {"rate_per_sec": 500, "max_pages": 30, "login_url": page,
                             "login_user": "qa_tester", "login_password": "lab-only-pw", **extra},
                             {"allow": ["127.0.0.1"], "deny": []}, logs.append, lambda p, m="": None, lambda: False)
-            return asyncio.run(sc.run()).crawl_stats
+            res = asyncio.run(sc.run())
+            res.crawl_stats["pages"] = {p.replace(base, "") for p in res.pages}
+            return res.crawl_stats
         a, b = login("/lab/a"), login("/lab/b")
         c_auto = login("/lab/c")
         c_manual = login("/lab/c", login_fields="username={user}&passwd={password}&jxn=login", login_post_url="/lab/login.do")
@@ -763,6 +765,8 @@ def test_login_legacy_form_patterns():
         assert st["login"].startswith("logged in"), st
         assert "username=<username>" in st["login_request"] and "passwd=<password>" in st["login_request"] and "jxn=login" in st["login_request"], st
     assert "no login form" in c_auto["login"] and "Login form fields" in c_auto["login"], c_auto
+    # /lab/home bounced to the login page when anonymous; after login the crawl must start from it, not the login page
+    assert "/lab/home" in a["pages"] and "/lab/records" in a["pages"], a["pages"]
     assert not any("lab-only-pw" in l for l in logs)
 
 

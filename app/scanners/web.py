@@ -416,6 +416,8 @@ class WebScanner:
         self._seen.add(start)
         self._queue.append((start, 0))
         self._patterns[d.pattern_key(start)] = 1
+        for u in getattr(self, "_start_seeds", []):  # page asked for (if it bounced to login) + post-login landing page,
+            self._enqueue(u, "start page", 0)         # queued first so they are crawled before robots/sitemap entries
         await self._seed()
         for path in (self.opt.get("extra_paths") or [])[:200]:  # operator-supplied start points
             self._enqueue(urljoin(self.target, str(path).strip()), "start path", 1)
@@ -509,6 +511,8 @@ class WebScanner:
         resp = await self._request("POST" if method == "POST" else "GET", action, data=fields if method == "POST" else None)
         if resp is not None and resp.is_redirect and resp.headers.get("location"):
             resp = await self._request("GET", urljoin(action, resp.headers["location"]))
+        if resp is not None and resp.status_code < 400:
+            self._start_seeds.append(d.strip_fragment(str(resp.url)))  # the page the app lands on after login
         # Success = the page we land on no longer shows a password form, and the session changed (new cookie or we left
         # the login page). Checked on the page after the login redirect, not on the home page (which may never have a form).
         landed = (resp.content or b"").lower().replace(b"'", b'"') if resp is not None else b""
@@ -883,9 +887,15 @@ class WebScanner:
                 hint = " (is Burp running with its proxy listener on that address?)" if proxy else ""
                 raise RuntimeError(f"target not reachable or out of scope: {self.target}{hint}")
             final = d.strip_fragment(str(r.url))
-            if final != d.strip_fragment(self.target):
+            requested = d.strip_fragment(self.target)
+            self._start_seeds = []  # extra crawl start points (see _crawl)
+            if final != requested:
                 self.log(f"start page redirected to {final}; crawling from there")
                 self.target = final
+                if self.opt.get("login_url"):
+                    # Anonymous visits usually bounce to the login page; once logged in, the page the operator asked
+                    # for is reachable, so crawl from it too (not only from the login page).
+                    self._start_seeds.append(requested)
             self._host = (urlsplit(self.target).hostname or "").lower()
             self._root_hash = hashlib.sha1(r.content or b"").hexdigest()
             await self._baseline()
