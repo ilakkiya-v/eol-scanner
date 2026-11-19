@@ -64,6 +64,17 @@ PORTAL_HOME = """<html><title>Portal home</title><body><a href="/portal/reports?
 <a href="/portal/users/edit?id=7">Edit user</a><a href="/portal/logout">Sign out</a></body></html>"""
 
 
+# Legacy login pages that all post username=..&passwd=..&jxn=login to /lab/login.do
+LAB_A = """<html><body><form method="post" action="/lab/login.do" onsubmit="this.username.value=u.value;this.passwd.value=p.value">
+User <input type="text" id="u"> Password <input type="password" id="p">
+<input type="hidden" name="username"><input type="hidden" name="passwd"><input type="hidden" name="jxn" value="login">
+<input type="submit" value="Log in"></form></body></html>"""   # visible boxes have no name; JS fills the hidden fields
+LAB_B = """<html><body><form method="post" action="/lab/login.do"><input name="username"><input name="passwd" type="PASSWORD">
+<button name="jxn" value="login">Log in</button></form></body></html>"""   # <button> without type submits jxn=login
+LAB_C = """<html><body><div id="box">User <input id="u"> Password <input type="password" id="p">
+<a href="#" onclick="post('/lab/login.do', {username: u.value, passwd: p.value, jxn: 'login'})">Log in</a></div></body></html>"""
+
+
 class H(BaseHTTPRequestHandler):
     server_version = "Apache/2.2.15 (CentOS)"
     sys_version = ""
@@ -72,6 +83,12 @@ class H(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         query = self.path.split("?", 1)[1] if "?" in self.path else ""
         logged_in = "SESSION=valid" in (self.headers.get("Cookie") or "")
+        if path in ("/lab/a", "/lab/b", "/lab/c"):
+            FILES[path] = ("text/html", {"/lab/a": LAB_A, "/lab/b": LAB_B, "/lab/c": LAB_C}[path])
+        if path == "/lab/home":
+            if "LAB=ok" not in (self.headers.get("Cookie") or ""):
+                return self._redirect("/lab/a")
+            FILES[path] = ("text/html", "<html><title>Lab home</title><body><a href='/lab/records'>Records</a></body></html>")
         if path.startswith("/portal/") and path != "/portal/login" and not logged_in:
             return self._redirect("/portal/login")
         if path == "/index.php" and query.startswith("page="):
@@ -127,6 +144,10 @@ class H(BaseHTTPRequestHandler):
         f = {k: v[0] for k, v in parse_qs(body).items()}
         if self.path == "/portal/login" and f.get("csrf") == "tok123" and f.get("username") == "qa_tester" and f.get("password") == "lab-only-pw":
             return self._redirect("/portal/home", "SESSION=valid; Path=/; HttpOnly")
+        if self.path == "/lab/login.do":
+            if f.get("username") == "qa_tester" and f.get("passwd") == "lab-only-pw" and f.get("jxn") == "login":
+                return self._redirect("/lab/home", "LAB=ok; Path=/")
+            return self._redirect("/lab/a?error=1")
         return self._redirect("/portal/login")
 
     def do_HEAD(self):

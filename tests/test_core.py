@@ -741,6 +741,31 @@ def test_crawl_login_routes_and_guessing():
     assert not any("lab-only-pw" in l for l in logs)                                    # password never logged
 
 
+def test_login_legacy_form_patterns():
+    """username=..&passwd=..&jxn=login style logins: hidden fields filled by JS, <button> without type, no <form>."""
+    import asyncio
+    from app.scanners.web import WebScanner
+    srv = _serve_fake_target()
+    base = f"http://127.0.0.1:{srv.server_port}"
+    logs = []
+    try:
+        def login(page, **extra):
+            sc = WebScanner(base + "/lab/home", "passive", {"rate_per_sec": 500, "max_pages": 5, "login_url": page,
+                            "login_user": "qa_tester", "login_password": "lab-only-pw", **extra},
+                            {"allow": ["127.0.0.1"], "deny": []}, logs.append, lambda p, m="": None, lambda: False)
+            return asyncio.run(sc.run()).crawl_stats
+        a, b = login("/lab/a"), login("/lab/b")
+        c_auto = login("/lab/c")
+        c_manual = login("/lab/c", login_fields="username={user}&passwd={password}&jxn=login", login_post_url="/lab/login.do")
+    finally:
+        srv.shutdown()
+    for st in (a, b, c_manual):
+        assert st["login"].startswith("logged in"), st
+        assert "username=<username>" in st["login_request"] and "passwd=<password>" in st["login_request"] and "jxn=login" in st["login_request"], st
+    assert "no login form" in c_auto["login"] and "Login form fields" in c_auto["login"], c_auto
+    assert not any("lab-only-pw" in l for l in logs)
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

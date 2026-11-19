@@ -188,6 +188,12 @@ async function newWeb() {
           <div><label>Test username</label><input type="text" name="login_user" autocomplete="off"></div>
           <div><label>Test password</label><input type="password" name="login_password" autocomplete="new-password"></div>
         </div>
+        <div class="grid cols-3">
+          <div style="grid-column: span 2"><label>Login form fields <span class="muted">(only if the login fails: copy the field names from the login request in Burp)</span></label>
+            <input type="text" name="login_fields" placeholder="username={user}&passwd={password}&jxn=login" autocomplete="off" spellcheck="false"></div>
+          <div><label>Send them to <span class="muted">(optional)</span></label><input type="text" name="login_post_url" placeholder="/servlet/Login" autocomplete="off"></div>
+        </div>
+        <div class="hint">Write <code>{user}</code> and <code>{password}</code> where the test account goes, and other fields as they appear in the request (e.g. <code>jxn=login</code>). Hidden anti-CSRF fields on the login page are added automatically. The scan log shows exactly which field received what (the password is masked).</div>
         <label>Extra start paths <span class="muted">(one per line: pages you know exist but nothing links to)</span></label>
         <textarea name="extra_paths" rows="3" placeholder="/admin/reports.jsp&#10;/legacy/index.php?page=export"></textarea>
       </details>
@@ -254,6 +260,7 @@ async function newWeb() {
       burp_proxy: !!fd.get("burp_proxy"), burp_scan: !!fd.get("burp_scan"), ai_review: !!fd.get("ai_review"),
       discover: !!fd.get("discover"), crawl_other_hosts: !!fd.get("crawl_other_hosts"),
       login_url: (fd.get("login_url") || "").trim(), login_user: (fd.get("login_user") || "").trim(), login_password: fd.get("login_password") || "",
+      login_fields: (fd.get("login_fields") || "").trim(), login_post_url: (fd.get("login_post_url") || "").trim(),
       extra_paths: (fd.get("extra_paths") || "").split("\n").map((x) => x.trim()).filter(Boolean) };
     store.set("lastScan", { target: body.target, operator: body.operator, ticket: body.ticket });
     f.querySelector("button[type=submit]").disabled = true;
@@ -454,7 +461,8 @@ function renderScan(scan, findings) {
   $("#rescan")?.addEventListener("click", async () => {
     try { const o = scan.options || {};
       const r = await api("/api/scans/web", { method: "POST", body: { target: scan.target, mode: scan.mode, operator: scan.operator, ticket: scan.ticket,
-        burp_scan: !!o.burp?.scan, burp_proxy: !!o.burp?.proxy, render_js: !!o.render_js, attest: confirm("Re-run this scan? Confirm you are still authorized to test this target.") } });
+        burp_scan: !!o.burp?.scan, burp_proxy: !!o.burp?.proxy, render_js: !!o.render_js,
+        attest: confirm("Re-run this scan? Confirm you are still authorized to test this target." + (o.login_url ? "\n\nNote: the re-scan runs without logging in, because the test password is never stored. Start a new web scan to crawl logged in." : "")) } });
       location.hash = `#/scan/${r.id}`; }
     catch (e) { toast(e.message, 5000); }
   });
@@ -638,7 +646,7 @@ function renderSurface(body, s) {
   const oos = Object.keys(cs.out_of_scope_redirects || {});
   body.innerHTML = `
   ${Object.keys(cs).length ? `<div class="panel"><h2>How the crawl went</h2><dl class="kv small">
-    ${cs.login ? `<dt>Login</dt><dd>${/^logged in/.test(cs.login) ? `<span style="color:var(--ok)">✓ ${esc(cs.login)}</span>` : `<span style="color:var(--crit)">✗ ${esc(cs.login)}</span>`}</dd>` : ""}
+    ${cs.login ? `<dt>Login</dt><dd>${/^logged in/.test(cs.login) ? `<span style="color:var(--ok)">✓ ${esc(cs.login)}</span>` : `<span style="color:var(--crit)">✗ ${esc(cs.login)}</span>`}${cs.login_request ? `<div class="mono small muted" style="word-break:break-all">${esc(cs.login_request)}</div>` : ""}</dd>` : ""}
     ${cs.guessed ? `<dt>Guessed paths</dt><dd>${cs.guessed.found} of ${cs.guessed.tried} common paths exist${cs.guessed.protected ? `, ${cs.guessed.protected} more need login or are forbidden` : ""}</dd>` : ""}
     ${skipped.length ? `<dt>Not followed</dt><dd>${skipped.map(([k, v]) => `${v} × ${esc(k)}`).join(" · ")}</dd>` : ""}
     ${others.length ? `<dt>Other hosts linked</dt><dd>${others.map(([h, n]) => `<code>${esc(h)}</code> (${n})`).join(", ")}<div class="muted">Not crawled. If you may test them, add them to the scope and tick “Also crawl other allowlisted hosts”.</div></dd>` : ""}

@@ -17,7 +17,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Callable, Optional
-from urllib.parse import urlencode, urljoin, urlsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit
 
 import httpx
 from bs4 import BeautifulSoup
@@ -73,6 +73,68 @@ class Snapshot:
         self.left -= len(text)
         self.files_left -= 1
         self.index.append({"file": name, "url": url, "status": r.status_code, "type": r.headers.get("content-type", "")})
+
+_PW_NAME = re.compile(r"pass|pwd|passw|secret|\bpin\b|kennwort|contrase|mot_?de_?passe", re.I)
+_USER_NAME = re.compile(r"user|login|logon|email|e-mail|mail|uname|usr|account|acct|uid|userid|member|principal|j_username|name|\bid\b", re.I)
+
+
+def _login_form(soup):
+    """The login form: the first form with a password box, else a form with a password-like field name (hidden fields
+    that JavaScript fills in), else None."""
+    forms = soup.find_all("form")
+    for f in forms:
+        if f.find("input", attrs={"type": re.compile("^password$", re.I)}):
+            return f
+    for f in forms:
+        if any(_PW_NAME.search(i.get("name") or "") for i in f.find_all("input")):
+            return f
+    return None
+
+
+def _login_fields(form) -> tuple[dict, dict]:
+    """(field values, {field name: role}) for a login form. Roles: username / password / submit / kept.
+
+    Handles the common legacy patterns: <input> without a type, the password box having no name while a hidden
+    'passwd' field is what gets submitted (JavaScript copies the value), the user field being hidden for the same
+    reason, and <button> without a type (which submits, and sends its name=value, e.g. jxn=login)."""
+    fields, roles, texts, hiddens, pw_named = {}, {}, [], [], []
+    for el in form.find_all(["input", "select", "textarea"]):
+        name = el.get("name")
+        t = (el.get("type") or ("text" if el.name == "input" else el.name)).lower()
+        if not name:
+            continue
+        if t == "password":
+            pw_named.append(name)
+            fields[name] = ""
+        elif t in ("checkbox", "radio"):
+            if el.has_attr("checked"):
+                fields[name] = el.get("value", "on")
+        elif t in ("submit", "button", "image", "reset", "file"):
+            continue
+        elif el.name == "select":
+            opt = el.find("option", selected=True) or el.find("option")
+            fields[name] = opt.get("value", opt.text) if opt else ""
+        else:
+            fields[name] = el.get("value", "")
+            (hiddens if t == "hidden" else texts).append(name) if t in ("hidden", "text", "email", "tel", "") or el.name == "textarea" else None
+    # password: a named password box, else a field whose name says password (often hidden, filled by JavaScript)
+    pw = pw_named[:1] or [n for n in texts + hiddens if _PW_NAME.search(n)][:1]
+    for n in pw:
+        roles[n] = "password"
+    # username: a visible text field with a user-like name, else a hidden one, else the first visible text field
+    cand = [n for n in texts if n not in roles and _USER_NAME.search(n)] or \
+           [n for n in hiddens if n not in roles and _USER_NAME.search(n) and not fields.get(n)] or \
+           [n for n in texts if n not in roles]
+    if cand:
+        roles[cand[0]] = "username"
+    # the submit control that would be clicked (its name=value is often required, e.g. jxn=login, action=login)
+    for b in form.find_all(["button", "input"]):
+        bt = (b.get("type") or ("submit" if b.name == "button" else "text")).lower()
+        if bt in ("submit", "image") and b.get("name"):
+            fields[b["name"]] = b.get("value", b.get_text(strip=True) if b.name == "button" else "")
+            roles[b["name"]] = "submit"
+            break
+    return fields, roles
 
 
 class WebScanner:
@@ -404,39 +466,43 @@ class WebScanner:
             self.res.crawl_stats["login"] = "login page not reachable or out of scope"
             return self.log("login: login page not reachable or out of scope")
         soup = BeautifulSoup((r.content or b"").decode("utf-8", "ignore"), "html.parser")
-        form = next((f for f in soup.find_all("form") if f.find("input", attrs={"type": re.compile("^password$", re.I)})), None)
-        if form is None:
-            self.res.crawl_stats["login"] = f"no login form with a password field at {r.url}"
-            return self.log(f"login: no form with a password field at {r.url}")
-        fields, user_field, text_fields = {}, None, []
-        for el in form.find_all(["input", "select", "textarea"]):
-            name = el.get("name")
-            t = (el.get("type") or ("text" if el.name == "input" else el.name)).lower()  # <input> without type = text
-            if not name:
-                continue
-            if t == "password":
-                fields[name] = self.opt.get("login_password", "")
-            elif t in ("checkbox", "radio"):
-                if el.has_attr("checked"):
-                    fields[name] = el.get("value", "on")
-            elif t in ("submit", "button", "image", "reset", "file"):
-                continue
-            elif el.name == "select":
-                opt = el.find("option", selected=True) or el.find("option")
-                fields[name] = opt.get("value", opt.text) if opt else ""
-            else:
-                fields[name] = el.get("value", "")
-                if t in ("text", "email", "tel", "") or el.name == "textarea":
-                    text_fields.append(name)
-        user_field = next((n for n in text_fields if re.search(r"user|login|email|mail|name|account|uid|id$", n, re.I)),
-                          text_fields[0] if text_fields else None)
-        if user_field:
-            fields[user_field] = self.opt.get("login_user", "")
-        sub = form.find(["button", "input"], attrs={"type": re.compile("^(submit|image)$", re.I)})
-        if sub is not None and sub.get("name"):
-            fields[sub["name"]] = sub.get("value", "")
-        action = urljoin(str(r.url), form.get("action") or str(r.url))
-        method = (form.get("method") or "POST").upper()
+        form = _login_form(soup)
+        template = (self.opt.get("login_fields") or "").strip()
+        if form is None and not template:
+            self.res.crawl_stats["login"] = (f"no login form found at {r.url} (it may be built by JavaScript): fill in "
+                                             "'Login form fields' to send the fields by hand")
+            return self.log(f"login: no login form found at {r.url}")
+        user, pw = self.opt.get("login_user", ""), self.opt.get("login_password", "")
+        fields, roles = (_login_fields(form) if form is not None else ({}, {}))
+        if template:
+            # Operator-supplied field list, e.g. username={user}&passwd={password}&jxn=login. Placeholders are filled in
+            # here; hidden fields from the page (anti-CSRF tokens) are kept unless the template sets them.
+            roles = {}
+            for k, v in parse_qsl(template, keep_blank_values=True):
+                if v in ("{user}", "{username}"):
+                    roles[k] = "username"
+                elif v in ("{password}", "{pass}", "{passwd}"):
+                    roles[k] = "password"
+                else:
+                    fields[k] = v
+                    roles.setdefault(k, "fixed value")
+        for k, role in roles.items():
+            if role == "username":
+                fields[k] = user
+            elif role == "password":
+                fields[k] = pw
+        if "password" not in roles.values() or "username" not in roles.values():
+            missing = [x for x in ("username", "password") if x not in roles.values()]
+            self.log(f"login: could not tell which field is the {' and '.join(missing)}; "
+                     "fill in 'Login form fields' (e.g. username={user}&passwd={password}&jxn=login)")
+        post_to = (self.opt.get("login_post_url") or "").strip()
+        action = urljoin(str(r.url), post_to or (form.get("action") if form is not None else "") or str(r.url))
+        method = "POST" if template or post_to else ((form.get("method") or "POST").upper() if form is not None else "POST")
+        # Show exactly what is sent (field names and roles; the password is never shown)
+        shown = ", ".join(f"{k}=<{roles[k]}>" if roles.get(k) in ("username", "password") else f"{k}={fields[k][:40]}"
+                          for k in fields)
+        self.res.crawl_stats["login_request"] = f"{method} {action}  {shown}"
+        self.log(f"login: {method} {action} with {shown}")
         if method != "POST":
             action = action.split("?")[0] + "?" + urlencode(fields)
         before = set(self.client.cookies.keys())

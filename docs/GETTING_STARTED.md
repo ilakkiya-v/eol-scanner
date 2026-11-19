@@ -182,7 +182,11 @@ The extracted source is kept so the AI review can read it. **Delete kept source*
 5. **Authorization:** your name and ticket. Under **Advanced** you can add a session cookie or auth header for a logged-in crawl. Log in with a test account, then copy the cookie from Burp or the browser. It is never stored.
 
 **If the crawl finds little**, it is almost always one of these. The **Attack surface** tab's *How the crawl went* panel tells you which:
-- **The app needs a login.** Under *Logged-in crawl*, give the login page and a **dedicated test account**. The scanner fills in the app's own form once, keeps the session and never follows logout links. The password is not stored. If the login goes through single sign-on on another host, paste a session cookie under **Advanced** instead.
+- **The app needs a login.** Under *Logged-in crawl*, give the login page and a **dedicated test account**. The scanner fills in the app's own form once, keeps the session and never follows logout links. The password is not stored.
+  - It recognises the usual legacy patterns: hidden `username`/`passwd` fields filled by JavaScript, `<button>` submits such as `jxn=login`, and inputs without a type.
+  - The log and *How the crawl went* show exactly what was sent, for example `POST /lab/login.do with username=<username>, passwd=<password>, jxn=login`.
+  - **If the login still fails,** open the app's real login request in Burp and copy its field names into **Login form fields**, e.g. `username={user}&passwd={password}&jxn=login`. If the request goes to a different URL than the login page, put it in **Send them to**. Hidden anti-CSRF fields are still added automatically.
+  - If the login goes through single sign-on on another host, paste a session cookie under **Advanced** instead.
 - **Pages aren't linked from anywhere.** Keep **Guess common unlinked paths** ticked. It tries about 340 well-known admin, API, docs and backup paths with GET and filters out "soft 404" pages. Also add the pages you know about under *Extra start paths*.
 - **The app spans several hosts.** The panel lists other hosts the app links to. Add them to the scope and tick **Also crawl other allowlisted hosts**.
 - **It's a single-page JavaScript app.** Tick **Also render pages in a headless browser**.
@@ -250,7 +254,7 @@ These checks use only your laptop: no VPN, no lab, no Claude needed.
    - Windows: `.venv\Scripts\python tests\test_core.py`
    - Mac/Linux: `.venv/bin/python tests/test_core.py`
 
-   You should see 30 lines starting with `ok`. A `skip` line is fine for an optional extra you didn't install.
+   You should see 31 lines starting with `ok`. A `skip` line is fine for an optional extra you didn't install.
 2. **Fake legacy web app.** In a second terminal, run `.venv/bin/python tests/fake_target.py 8899` (Windows: `.venv\Scripts\python tests\fake_target.py 8899`). Then:
    - add `127.0.0.1` to the scope;
    - start a **Web scan** of `http://127.0.0.1:8899` in **Active** mode.

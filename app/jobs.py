@@ -156,7 +156,7 @@ def start_web(target: str, mode: str, operator: str, ticket: str, options: dict)
     scope.check(url)  # fail fast before queuing
     opts = {**db.get_setting("scan_defaults"), **{k: v for k, v in options.items() if v not in (None, "")}}
     opts["raw_target"] = raw_target
-    stored = {k: v for k, v in opts.items() if k not in ("headers", "cookies", "login_password")}  # secrets never stored
+    stored = {k: v for k, v in opts.items() if k not in ("headers", "cookies", "login_password", "login_fields")}  # never stored
     stored["auth_headers"] = sorted((opts.get("headers") or {}).keys())
     stored["cookies_set"] = bool(opts.get("cookies"))
     if opts.get("burp_scan") or opts.get("burp_proxy"):

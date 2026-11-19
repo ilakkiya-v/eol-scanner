@@ -72,6 +72,8 @@ class WebScanIn(BaseModel):
     login_url: str = ""                 # logged-in crawl: login page + test account (password never stored)
     login_user: str = ""
     login_password: str = ""
+    login_fields: str = ""              # optional: username={user}&passwd={password}&jxn=login (unusual / JS forms)
+    login_post_url: str = ""            # optional: where to send them, if not the form's own action
 
 
 class ScopeIn(BaseModel):
